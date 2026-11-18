@@ -101,6 +101,12 @@ because the project's own spill gate cannot see a HIP object.
       the *same* suite against today's `llama-rocm-docker:0.3` engine so we know whether the fork is ahead or behind
       **before** we optimize it. Reference points from 0.2.1 on this card: 349 tok/s @8K read, 373 @17K, 32.6 tok/s
       decode @18k.
+- [ ] **P0-4b** **The prompt number needs a controlled warm/cold A/B before any claim about it.** A long prompt reads
+      essentially the whole expert set (~32 GB for a 3 K-token prompt), so the prompt column measures the page cache as
+      much as the engine: the 0.2.1 row was taken with a cache warm from hours of use (`the OS read 1248 MB from storage
+      for 34654 MB of expert reads`) and the fork rows start from a fresh container. Reproduce it deliberately: warm the
+      cache with a fixed prelude, then alternate engines, N times. Until then the prompt column is reported with that
+      caveat only (`OPTIMIZATION-RESULTS.md`).
 - [ ] **P0-5** Port the round harness from the working install into the fork tree (`bench/mi50_round.sh`,
       `mi50_round_run.sh`, `mi50_live_ab.py`, `mi50_stall_watch.py` from `llama-rocm-docker/mi50-port/files/bench/`)
       and make `--config` point at the fork's run config. This is mechanical, and it is what makes 40 rounds cheap.
@@ -208,6 +214,13 @@ Gyro-M's 144 routed-expert tensors are TQ2_T on both projections, and decode is 
       Add explicit `__attribute__((amdgpu_waves_per_eu(N)))` (or the second `__launch_bounds__` argument) where the
       VGPR count forbids the waves the grid needs, and sweep N = 2/3/4 on the decode kernels. This is exactly the
       "160 blocks on 60 CUs instead of a second round" case in the discussion.
+- [ ] **P5-0** The spill table's first entries are the opt-in `STRATA_GR_V3` kernels (`gr_down_v3_kernel`: 256 VGPR +
+      535 spilled registers, 1 wave/SIMD), which `gr_v3_default_on()` never turns on in a HIP build - dead weight in
+      every gfx906 image. Build them only for the backends that can run them; that also makes the spill table readable.
+- [ ] **P5-1b** The two hot kernels that do spill, from the table: `block_topk_reg_kernel<66>` (QSA top-k, per query per
+      layer, 406 spilled registers, 32.9 KB LDS) and `attend(...)` (QSA attention, 256 VGPR + 195 spilled, **one wave per
+      SIMD**). Both are on a measured hot path; both want the un-unroll / tile-width / `waves_per_eu` treatment, micro-bench
+      first.
 - [ ] **P5-3** Wire `tools/hip/check_hip_spills.py` (P0-6) into CI-style use so future changes cannot silently add
       spills, mirroring the CUDA gate.
 
