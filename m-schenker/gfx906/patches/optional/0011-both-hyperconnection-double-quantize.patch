@@ -1,23 +1,23 @@
 # backend: both (the hyper-connection read is shared; nothing here is gfx906-specific).
 #
-# NOT SHIPPED - the measurement could not be completed, so the change stays out.
+# NOT SHIPPED - measured, and it does not help.
 #
 # fused_gr_read_multi() returns whether it left the q8_1 image of `mixed` behind; when it does not, the caller runs
 # native_quantize_q8_1 over `mixed` itself (mtp.cpp / verify.cpp / layer.cpp: `if (!q8) quantize`).  The gfx906
 # STRATA_GR_SPLIT=1 path launches gr_up_fast_kernel / gr_up_multi_kernel - both of which end in
-# `if (m.a[0].q8_mixed != nullptr) gr_q8_tail(m, d0)` - and then returns `false` unconditionally, so the activation looks
-# like it is quantised twice: once in the up kernel, once by the caller.
+# `if (m.a[0].q8_mixed != nullptr) gr_q8_tail(m, d0)` - and then returns `false`, so the activation looked like it was
+# quantised twice: once in the up kernel, once by the caller.  This patch returns `q8` instead, skipping the second pass.
 #
-# This patch returns `q8` instead, removing that second pass.  It was NOT validated: measuring it needs an engine binary
-# built with the change, and on this box a locally built engine (the image's own build tree, `ninja strata`) serves
-# degenerate output *with and without* this patch - one to three tokens and a stop - while the image's own binary serves
-# normally (40 tokens on the same prompt).  So the A/B has to be done by rebuilding the image, not by swapping the binary
-# into the serving container, and until that is done the patch is a code-reading argument only.
+# Measured (the first engine-level A/B in this branch that could be run at all, `bench/gfx906_tg_probe.sh`, 5 and 4 reps,
+# both arms from the same build tree with the shipped patches, both with STRATA_GR_SPLIT=1, `ninja strata` + the binary
+# swapped into the serving container, correct output in both arms - 40 tokens on the same prompt):
 #
-# The suspicion that it is wrong, on the evidence available: with this patch the split path's *partial* q8 tail would be
-# trusted for the whole vector.  If gr_up_fast_kernel's gr_q8_tail only covers the columns its blocks own (UPM_COLS per
-# block), the caller's quantise is required and this patch would feed uninitialised values to the next GEMV.  That is the
-# first thing to check when the image rebuild happens: print the columns gr_q8_tail writes against N.
+#   without this patch   67.4 tok/s
+#   with this patch      50.8 tok/s
+#
+# So removing the pass is at best eaten by something else in the chain and at worst a regression; the medians are noisy on
+# this card (single reps ranged 50-197 tok/s), but there is no measurement in favour of the change, and the second
+# quantisation writes the same bytes to the same place, so it was never a correctness problem.  Kept out.
 #
 diff --git a/src/kernels/cuda/fused_gr.cu b/src/kernels/cuda/fused_gr.cu
 index 1c3d4df..1cf41ea 100644
