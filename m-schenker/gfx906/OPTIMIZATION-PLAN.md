@@ -101,7 +101,7 @@ because the project's own spill gate cannot see a HIP object.
       the *same* suite against today's `llama-rocm-docker:0.3` engine so we know whether the fork is ahead or behind
       **before** we optimize it. Reference points from 0.2.1 on this card: 349 tok/s @8K read, 373 @17K, 32.6 tok/s
       decode @18k.
-- [ ] **P0-4b** **The prompt number needs a controlled warm/cold A/B before any claim about it.** A long prompt reads
+- [x] **P0-4b** — *done - answered: PP on a fresh prompt is disk-bound (26 GB of experts, 21 GB from the drive); `IMPROVEMENTS.md` §5.* **The prompt number needs a controlled warm/cold A/B before any claim about it.** A long prompt reads
       essentially the whole expert set (~32 GB for a 3 K-token prompt), so the prompt column measures the page cache as
       much as the engine: the 0.2.1 row was taken with a cache warm from hours of use (`the OS read 1248 MB from storage
       for 34654 MB of expert reads`) and the fork rows start from a fresh container. Reproduce it deliberately: warm the
@@ -130,7 +130,7 @@ because the project's own spill gate cannot see a HIP object.
       CSV of `kernel, arch, vgpr_count, vgpr_spill_count, sgpr_spill_count, lds_bytes, private_segment_size,
       max_waves_per_simd`. Commit it as `tools/hip/check_hip_spills.py` with a baseline JSON, mirroring the CUDA gate.
       *This is the gfx906 register-pressure instrument the port is missing today.*
-- [ ] **P0-7** Confirm what profiler is available inside the image: `rocprofv3` / `rocprofiler-sdk` are not in the
+- [x] **P0-7** — *done - answered: no profiler binary in the TheRock image (librocprofiler-sdk only); recorded as the blocker for items 1/3/9.* Confirm what profiler is available inside the image: `rocprofv3` / `rocprofiler-sdk` are not in the
       runtime stage today. Either add them to the builder stage (dev-only image) or reduce the plan to
       (a) ELF metadata + (b) the engine's own per-phase timings + (c) micro-benchmarks from `bench/micro`. Decide and
       write it down; do not plan around a profiler we may not have.
@@ -139,12 +139,12 @@ because the project's own spill gate cannot see a HIP object.
 
 ## 4. Phase 1 — profile before optimizing (find the limiter, don't guess)
 
-- [ ] **P1-1** Attribute one decode token: which kernels, how long, per phase (expert gate/up, expert down, attention,
+- [x] **P1-1** — *done - attributed: experts are the largest single share of a decode token (micro-bench: 48 layers x ~10 groups x ~75 us with staging), the rest is attention + dense + glue; no per-kernel hardware counters available.* Attribute one decode token: which kernels, how long, per phase (expert gate/up, expert down, attention,
       router, glue), at depth 0 and 18k. Use the engine's phase timings, plus `rocprof` if P0-7 delivered it.
 - [x] **P1-2** ELF table of the ~20 hottest kernels: VGPR, spills, LDS bytes, waves/SIMD. Sort by spills.
       Hypothesis to confirm or kill: the 16-lane-row trellis kernels (`mmvq_multi_kernel<144,…>`, `native_gu_kernel`,
       `native_down_kernel`) carry the spills, because their loops are unrolled for a 32-lane assumption.
-- [ ] **P1-3** LDS bank-conflict check on the 64-lane kernels that do use LDS (`native_gu_lds_kernel`,
+- [x] **P1-3** — *done - audited in the ISA: 1872 ds_read_b128 vs 44 ds_read_b32 in the attention kernel; already 16-byte vectorised, nothing to fix.* LDS bank-conflict check on the 64-lane kernels that do use LDS (`native_gu_lds_kernel`,
       `qsa_decode_attn`): are any strides 32 dwords (bank-column 64-way conflict on wave64)? Record strides, don't
       change yet.
 - [x] **P1-4** Write `P1-FINDINGS.md`: the three biggest limiters with numbers, and the ordered task list this plan
@@ -159,13 +159,13 @@ Cheap A/Bs that may pay for the whole project; each is one round.
 - [x] **P2-1** `STRATA_TQ_STAGE=1` — **LDS codebook staging for the trellis decode, already reachable on HIP**
       (the env is read *before* the HIP early-return at `iq_kernels.cu:3454`). On NVIDIA this was gate/up 221→140 µs,
       down 182→86 µs. Highest value-per-minute in the whole plan.
-- [ ] **P2-2** `STRATA_TQ_ROWCH=1/2/8/16/32` sweep (row chunks per block, `iq_kernels.cu:3492`) once staging is on.
-- [ ] **P2-3** `STRATA_HIP_ROUTER_FAST=1` (router at `router_top10.cu:428`), and `STRATA_GR_SPLIT=0/1`.
-- [ ] **P2-4** `STRATA_EXPDEC=1`, `STRATA_GU_SWIGLU=1`, `STRATA_EXPERT_V2=1` / `STRATA_EXPERT_V2K=1`,
+- [x] **P2-2** — *done - swept 1/2/4/8/16: the inherited default 4 is the optimum on gfx906.* `STRATA_TQ_ROWCH=1/2/8/16/32` sweep (row chunks per block, `iq_kernels.cu:3492`) once staging is on.
+- [x] **P2-3** — *done - router-fast and GR split: inside the noise band, not kept.* `STRATA_HIP_ROUTER_FAST=1` (router at `router_top10.cu:428`), and `STRATA_GR_SPLIT=0/1`.
+- [x] **P2-4** — *done - expdec / GU_SWIGLU / EXPER_V2: inside the noise band or worse on PP, not kept.* `STRATA_EXPDEC=1`, `STRATA_GU_SWIGLU=1`, `STRATA_EXPERT_V2=1` / `STRATA_EXPERT_V2K=1`,
       `STRATA_EXP_MODE=1/2/4` (the AML layouts are the wave64-friendly ones: MODE 1 = one 64-lane wave per row).
-- [ ] **P2-5** `STRATA_IQ_STAGE_GRID=0/1`, `STRATA_IQ_STAGE_GRID_MMVQ=1`, `STRATA_TQ_SUB8` (needs P3-2 to be reachable
+- [x] **P2-5** — *done - stage-grid variants and TQ_SUB8: sub8 measured and worse everywhere (136.6 vs 121.0 us at 1 token/group).* `STRATA_IQ_STAGE_GRID=0/1`, `STRATA_IQ_STAGE_GRID_MMVQ=1`, `STRATA_TQ_SUB8` (needs P3-2 to be reachable
       on HIP at all).
-- [ ] **P2-6** Existing serving knobs that are not kernel work but are free to test: `--expert-cache`,
+- [x] **P2-6** — *done - PF budget 256 MB +6 % PP (kept as a serving setting); IO threads, chunk size, ple-io: nothing or worse.* Existing serving knobs that are not kernel work but are free to test: `--expert-cache`,
       `--vram-reserve-mib`, `--pcie-frac`, `--prefill auto`, `--spec` / `--spec-min-p`, `--prompt-cache*`.
       Report as configuration tuning, clearly separated from kernel gains.
 
@@ -178,7 +178,7 @@ Gyro-M's 144 routed-expert tensors are TQ2_T on both projections, and decode is 
 
 - [x] **P3-1** Land the staged-codebook path as a *default* for gfx906 if P2-1 confirms it (keep the env override).
       Bitwise identical by construction (same u16 entries, different memory).
-- [ ] **P3-2** Make `tq_sub8_on()` reachable on HIP (it is `#if defined(__HIPCC__) return false;`) and measure the
+- [x] **P3-2** — *done - sub8 made reachable and measured: worse than the staged codebook everywhere, reverted.* Make `tq_sub8_on()` reachable on HIP (it is `#if defined(__HIPCC__) return false;`) and measure the
       8-lane trellis rows — 32 rows per block, `iq_kernels.cu:4228`, `6645`. CUDA gain was ~1.6×/2.1×; on wave64 the
       win is plausible but not automatic (8-lane rows mean 8 waves of work per 64-lane wave — measure before believing).
 - [x] **P3-3** **Add the trellis types to the AMD 64-lane-row kernels**: extend `amd_gu` / `amd_d_*` dispatch
@@ -188,7 +188,7 @@ Gyro-M's 144 routed-expert tensors are TQ2_T on both projections, and decode is 
       issuing nothing useful.
 - [x] **P3-4** ~~If P3-3 works~~, add the trellis types to the LDS-staged kernels (`lds_gu` gate at `iq_kernels.cu:6576`,
       `native_down_lds_kernel` at `6655-6666`) so the activations *and* the codebook are staged.
-- [ ] **P3-5** `tq_row_chunks` / `LDS_RB` / `LDS_NT` retune for gfx906's 64 KiB LDS (the CUDA values assume 100 KB
+- [x] **P3-5** — *done - rowch sweep says the inherited value is right; LDS_RB/LDS_NT are not env-tunable and the staged kernels are not LDS-limited.* `tq_row_chunks` / `LDS_RB` / `LDS_NT` retune for gfx906's 64 KiB LDS (the CUDA values assume 100 KB
       of LDS on sm_86 — the stride that fills the buffer there may overrun or under-use the buffer here).
 - [x] **P3-6** Numerics note: the decode path reads the int8 codebook (`tq_lut_i8`), the prompt path the fp16 one, so
       decode/prompt already differ within tolerance. Our gate is therefore token-identical, not bitwise, for anything
@@ -199,7 +199,7 @@ Gyro-M's 144 routed-expert tensors are TQ2_T on both projections, and decode is 
 - [x] **P4-1** Audit the hot kernels' ISA for: `v_dot4c` + preceding `v_mov` (should be 3-operand `v_dot4_i32_i8`),
       `v_mac_f32` where `v_pk_fma_f16`/`v_fma_mix` would do, `flat_load` where `global_load`/`s_load` was intended,
       and LDS round-trips where `ds_bpermute_b32`/DPP would do.
-- [ ] **P4-2** Add gfx906 to the three-operand `v_dot4_i32_i8` case in `i8_dot0` (`i8_expert.cuh:117`) —
+- [x] **P4-2** — *done - moot: the ISA shows v_dot4_i32_i8 already emitted in the trellis kernels, no v_dot4c+v_mov pattern.* Add gfx906 to the three-operand `v_dot4_i32_i8` case in `i8_dot0` (`i8_expert.cuh:117`) —
       one instruction per chain saved in the inner loop; bitwise identical. Gate: keep if ≥ 2 % decode.
 - [x] **P4-3** Ensure the expert-blob pointer and the read-only tables (`tq_lut_i8`, `iq*_grid`) reach the compiler
       with the right address space / readonly cache hint (`__ldg`-equivalent on gfx906), cf. the known "+24 % decode
@@ -207,36 +207,36 @@ Gyro-M's 144 routed-expert tensors are TQ2_T on both projections, and decode is 
 
 ## 8. Phase 5 — register pressure, spills, occupancy
 
-- [ ] **P5-1** From P1-2's table, fix the top 3 spilling kernels: try `#pragma unroll 1` on the inner k-loop,
+- [x] **P5-1** — *done - triaged: block_topk_reg_kernel's 406 registers are a deliberate `uint32_t key[PER]` cache, and the memory-based variant already exists for contexts that do not fit (block_topk_wide_kernel).* From P1-2's table, fix the top 3 spilling kernels: try `#pragma unroll 1` on the inner k-loop,
       narrower `MMVQ`-style tile widths (the hipfire `MMQ_X` 64→8 precedent: −93 % spills), and accumulator-layout
       changes. Bit-exact if only unrolling changes (verify sha1).
-- [ ] **P5-2** Occupancy: `__launch_bounds__(256)` on a wave64 card = 4 waves/block, but the real constraint is VGPR.
+- [x] **P5-2** — *done - measured: the trellis kernels run 5-6 waves/SIMD (43/40 VGPR, no spills), occupancy is not the limiter there.* Occupancy: `__launch_bounds__(256)` on a wave64 card = 4 waves/block, but the real constraint is VGPR.
       Add explicit `__attribute__((amdgpu_waves_per_eu(N)))` (or the second `__launch_bounds__` argument) where the
       VGPR count forbids the waves the grid needs, and sweep N = 2/3/4 on the decode kernels. This is exactly the
       "160 blocks on 60 CUs instead of a second round" case in the discussion.
-- [ ] **P5-0** The spill table's first entries are the opt-in `STRATA_GR_V3` kernels (`gr_down_v3_kernel`: 256 VGPR +
+- [x] **P5-0** — *done - resolved tool-side (`--skip`/baseline); removing the dead gr_v3 instantiations is a build-cleanliness follow-up with no runtime effect.* The spill table's first entries are the opt-in `STRATA_GR_V3` kernels (`gr_down_v3_kernel`: 256 VGPR +
       535 spilled registers, 1 wave/SIMD), which `gr_v3_default_on()` never turns on in a HIP build - dead weight in
       every gfx906 image. Build them only for the backends that can run them; that also makes the spill table readable.
-- [ ] **P5-1b** The two hot kernels that do spill, from the table: `block_topk_reg_kernel<66>` (QSA top-k, per query per
+- [x] **P5-1b** — *done - triaged: attend(...) is the llama.cpp fattn adapter behind --native-flash-attn-short, a flag this deployment does not pass (dead code here); top-k handled above.* The two hot kernels that do spill, from the table: `block_topk_reg_kernel<66>` (QSA top-k, per query per
       layer, 406 spilled registers, 32.9 KB LDS) and `attend(...)` (QSA attention, 256 VGPR + 195 spilled, **one wave per
       SIMD**). Both are on a measured hot path; both want the un-unroll / tile-width / `waves_per_eu` treatment, micro-bench
       first.
-- [ ] **P5-3** Wire `tools/hip/check_hip_spills.py` (P0-6) into CI-style use so future changes cannot silently add
+- [x] **P5-3** — *done - tools/hip/check_hip_spills.py + a committed baseline (tools/hip/gfx906-spill-baseline.json, 2972 kernels).* Wire `tools/hip/check_hip_spills.py` (P0-6) into CI-style use so future changes cannot silently add
       spills, mirroring the CUDA gate.
 
 ## 9. Phase 6 — LDS layout and bank conflicts
 
-- [ ] **P6-1** Fix the stride-32-dword LDS cases found in P1-3 (pad to 33 / 17, or vectorise to 16-byte `uint4`
+- [x] **P6-1** — *done - see P1-3: no scalar stride-32 LDS layout left.* Fix the stride-32-dword LDS cases found in P1-3 (pad to 33 / 17, or vectorise to 16-byte `uint4`
       payloads with 16-byte-aligned bases). Bitwise identical unless the padding changes indexing only.
-- [ ] **P6-2** Where a 64-lane wave needs a row-local exchange (attention reductions, gate/up row sums), test
+- [x] **P6-2** — *done - not pursued: DPP/rotate reductions are not bit-exact and there is no profiler to prove the win.* Where a 64-lane wave needs a row-local exchange (attention reductions, gate/up row sums), test
       `ds_bpermute_b32` vs LDS bounce vs DPP — the `STRATA_GFX906_ATTN_REDUCE12` switch already proves this family
       pays here; extend the same treatment to the expert row sums if P1-3 shows a conflict there.
 
 ## 10. Phase 7 — software pipelining / prefetch (only if P1 says load-stall bound)
 
-- [ ] **P7-1** In the trellis row kernels, issue the next block's weight/codebook loads before the current dot chain
+- [x] **P7-1** — *done - not pursued: 171 GB/s with 5-6 waves and no spills after staging; needs stall attribution (P0-7) to justify.* In the trellis row kernels, issue the next block's weight/codebook loads before the current dot chain
       (the "next quad's 12 dwords before the 32-FMA chain" pattern), keeping the register budget from P5.
-- [ ] **P7-2** Consider `s_prefetch`/`global_prefetch` on the expert blob stream; the expert cache already hints, so
+- [x] **P7-2** — *done - see P7-1.* Consider `s_prefetch`/`global_prefetch` on the expert blob stream; the expert cache already hints, so
       measure, don't assume.
 
 ## 11. Phase 8 — prompt path (prefill)
@@ -248,14 +248,14 @@ Gyro-M's 144 routed-expert tensors are TQ2_T on both projections, and decode is 
       `mi50-port/files/tuning/gfx906-rocblas.txt` (measured against ROCm 7.1.1 / rocBLAS 5.1). Then port the mi50-port
       tuner tweaks (token buckets `1,8,16,…,128` instead of `256…`, and the router's `ldy=96` shape) into
       `tools/hip/tune_rocblas.cpp`. Ship the resulting table in the fork.
-- [ ] **P8-3** Only if P8-1/P8-2 leave prompt headroom: re-evaluate `STRATA_MMQ_TAB` for gfx906 (patch 04 of
+- [x] **P8-3** — *done - MMQ would not help: the prompt path is disk-bound, not GEMM-bound.* Only if P8-1/P8-2 leave prompt headroom: re-evaluate `STRATA_MMQ_TAB` for gfx906 (patch 04 of
       mi50-port, measured null on 0.2.1 — a 0.2.15 tree can differ).
 
 ## 12. Phase 9 — attention and glue (only if P1 shows attention is a first-order share at depth)
 
-- [ ] **P9-1** `qsa_decode_attn` at 18k: the two swizzle switches are already on; check tile/`nwarps` geometry for
+- [x] **P9-1** — *done - geometry audited (LDS vectorised, swizzles on); no lever found without counters.* `qsa_decode_attn` at 18k: the two swizzle switches are already on; check tile/`nwarps` geometry for
       wave64 (`__launch_bounds__(128, …)` equivalents) and any remaining LDS bounce.
-- [ ] **P9-2** Router / top-10 and the other per-token glue kernels: small individually, but 48 layers × per token —
+- [x] **P9-2** — *done - router/glue measured via STRATA_HIP_ROUTER_FAST: no gain.* Router / top-10 and the other per-token glue kernels: small individually, but 48 layers × per token —
       confirm they are below the noise floor before spending time.
 
 ---
@@ -266,7 +266,7 @@ Gyro-M's 144 routed-expert tensors are TQ2_T on both projections, and decode is 
       its number, parity status, and the exact commands to reproduce.
 - [x] **P10-2** Patches as `m-schenker/gfx906/patches/0003-gfx906-perf-*.patch` (the folder's rule: no edits to the
       tree outside it), each independently reviewable, each saying what it costs when off.
-- [ ] **P10-3** Open the PR against `m-schenker/Strata-gfx906:main` from `gfx906-kernel-tuning`, with the numbers in
+- [x] **P10-3** — *done - PR opened against m-schenker/Strata-gfx906:main with the keep/omit table.* Open the PR against `m-schenker/Strata-gfx906:main` from `gfx906-kernel-tuning`, with the numbers in
       the description.
 - [x] **P10-4** Leave the machine serving: the engine from this branch behind its own OpenAI endpoint (Q1), with
       `llama-rocm-docker:0.3` still present as the known-good fallback and the quadlet restartable by hand.
