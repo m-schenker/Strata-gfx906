@@ -1,0 +1,50 @@
+# backend: both (kernels shared by both engines; the change only fires in a gfx906 build).
+#
+# OPTIONAL - not applied.  It routes the trellis expert types (144 TQ2_T, 145 TQK6, 146 TQK7) into the gfx906
+# 64-lane/row expert layouts (native_gu_amd_kernel / native_down_amd_kernel, selected with STRATA_EXP_MODE=1 / 2 / 4),
+# which their dispatch whitelist did not include - so today a Gyro pack always gets the CUDA 16-lane-row layout.
+#
+# Measured with native_expert_bench on one MI50 32 GB against the real Gyro-M GGUF (layer 0, reference mode 0):
+#
+#   groups x tokens | mode 0 (CUDA rows) | mode 1 (64-lane row)     | mode 2 (R2, two rows/warp) | mode 4
+#   8 x 1           | 159.4 us           | 163.9 us, NOT bitwise    | 154.2 us  (+3.3 %)          | 157.5 us
+#   16 x 1          | 294.7 us           | -                        | 276.2 us  (+6.3 %)          | -
+#   32 x 1          | 562.6 us           | -                        | 528.8 us  (+6.0 %)          | -
+#   16 x 2          | 320.7 us           | -                        | 537.4 us  (-68 %)           | 523.9 us (-63 %)
+#   16 x 4          | 385.4 us           | -                        | 1045.9 us (-171 %)          | -
+#
+# i.e. it wins only for a group of exactly one token, and a `--spec 4` verify produces groups of 2-5.  That is why this
+# is not a default: it is the switch to try on a box that decodes without a drafter, or where the group shapes differ
+# (a layer-split deployment).  Every mode was bitwise equal to mode 0 except mode 1.
+#
+# The condition is written with the three type numbers rather than kTqType<T>, because L.gu_type is a runtime value.
+
+--- a/src/kernels/cuda/iq_kernels.cu
++++ b/src/kernels/cuda/iq_kernels.cu
+@@ -6593,11 +6593,12 @@
+             else native_gu_amd_kernel<T, 2><<<ggu_amd, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
+     // the AMD layouts cover the IQ packs' gate/up types; Unsloth's Q4_K / Q5_K take the CUDA layout below
+     const bool amd_gu = L.gu_type == 16 || L.gu_type == 17 || L.gu_type == 18 || L.gu_type == 21 || L.gu_type == 22 ||
+-                        L.gu_type == 23 || L.gu_type == 29 || L.gu_type == 42;
++                        L.gu_type == 23 || L.gu_type == 29 || L.gu_type == 42 ||
++                        (L.gu_type == 144 || L.gu_type == 145 || L.gu_type == 146);   // 144 TQ2_T, 145 TQK6, 146 TQK7: the trellis types, same row shape
+     if ((em == 1 || em == 2 || em == 4) && amd_gu && !nib_layout(L)) {
+         switch (L.gu_type) {
+             STRATA_GU_AMD(16) STRATA_GU_AMD(17) STRATA_GU_AMD(18) STRATA_GU_AMD(21) STRATA_GU_AMD(22) STRATA_GU_AMD(23)
+-            STRATA_GU_AMD(29) STRATA_GU_AMD(42)
++            STRATA_GU_AMD(29) STRATA_GU_AMD(42) STRATA_GU_AMD(144) STRATA_GU_AMD(145) STRATA_GU_AMD(146)
+         }
+     } else
+ #undef STRATA_GU_AMD
+@@ -6675,9 +6676,9 @@
+             else native_down_amd_kernel<T, 2><<<gd_amd, 256, 0, s>>>(grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
+     // the AMD layouts cover the IQ packs' down types; the others (Unsloth's Q4_K / Q5_K / Q5_1 / Q8_0) take the
+     // CUDA layout below
+-    if ((em == 1 || em == 2 || em == 4) && (L.d_type == 20 || L.d_type == 23 || L.d_type == 42)) {
++    if ((em == 1 || em == 2 || em == 4) && (L.d_type == 20 || L.d_type == 23 || L.d_type == 42 || L.d_type == 144 || L.d_type == 145 || L.d_type == 146)) {
+         switch (L.d_type) {
+-            STRATA_D_AMD(20) STRATA_D_AMD(23) STRATA_D_AMD(42)
++            STRATA_D_AMD(20) STRATA_D_AMD(23) STRATA_D_AMD(42) STRATA_D_AMD(144) STRATA_D_AMD(145) STRATA_D_AMD(146)
+         }
+     } else
+ #undef STRATA_D_AMD

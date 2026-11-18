@@ -21,6 +21,9 @@ patches/optional/**              ignored
 | Patch | Backend | What it does |
 | --- | --- | --- |
 | `0001-both-gfx906-compat-missing-mappings.patch` | both | 15 CUDA-to-HIP mappings the gfx906 compat layer is missing (`cudaDeviceGetStreamPriorityRange` and `cudaStreamCreateWithPriority` of the DFlash2 drafter, the 4-bit expert fill's error codes, an occupancy query, function and pointer attributes, a graph flag). **Required**: without it `ninja strata` stops on `src/core/dflash2.cpp`. |
+| `0003-both-gfx906-rocblas-prompt-table.patch` | both | makes the prompt path's FP16-out rocBLAS GEMMs and the `STRATA_ROCBLAS_TUNING` solution table exist on gfx906: the rocBLAS package is looked for in the gfx906 toolchain and the `STRATA_ENABLE_HIP`-only gate that compiles the path and the tuner is opened for `STRATA_HIP_GFX906`. Without it a gfx906 build has no rocBLAS prompt path at all (4K prompt 232 vs 392 tok/s against the same card's 0.2.1 install), and `tune_rocblas` is not even a target. |
+| `0004-both-tune-rocblas-small-buckets-router-ldy.patch` | both | the tuner calibrates the token buckets a real prompt asks for (1…128, not just 256+) and the router's padded `ldy=96` shape, which otherwise never matches a row. Architecture-generic; changes which rows a table has, not what a row means. |
+| `0005-both-gfx906-trellis-lds-codebook-default.patch` | both | the trellis expert kernels (144/145/146) copy their 4 KB int8 codebook into shared memory on gfx906 by default instead of re-reading it from global memory: `native_expert_bench`, 16 experts, gate/up + down 294 → 120 µs at 1 token and 385 → 172 µs at 4 tokens (bitwise equal), and **+24 % decode end to end** (38.9 → 48.1 tok/s at 3.1 K prompt depth). `STRATA_TQ_STAGE=0` is the way back; the wave32 HIP backend is untouched. |
 | `0002-ds41-vendored-engine-cmake.patch` | both | the build wiring for the vendored DeepSeek engine: `CMakeLists.txt` calls `cmake/strata_dsv41.cmake` once the gfx906 backend has set up `CUDA::cudart`, `CUDA::cublas` and `strata_prefill`; `cmake/strata_ggml.cmake` builds ggml-cpu with BMI2 OFF when `STRATA_BUILD_DSV41` is on, as upstream's own dsv41 block did. |
 
 The gfx906 backend itself is part of the tree: `CMakeLists.txt` builds the CUDA targets through
@@ -74,6 +77,7 @@ docker compose -f m-schenker/gfx906/docker-compose.yml build
 
 | Patch | Backend | What it does |
 | --- | --- | --- |
+| `optional/0006-both-gfx906-trellis-amd-layout-dispatch.patch` | both | routes the trellis expert types (144/145/146) into the gfx906 64-lane/row layouts (`STRATA_EXP_MODE=1/2/4`). Measured with `native_expert_bench`: +3–6 % at one token per group, −63…−171 % at the 2–5-token groups a `--spec 4` verify produces, so it is a switch for a drafter-free or layer-split box, not a default. Mode 1 is also not bitwise equal. |
 | `optional/0007-qwen-gfx906-attn-query-swizzle-default.patch` | qwen | `STRATA_GFX906_ATTN_QUERY_SWIZZLE` on by default (unset = on, `0`/`false`/empty = off). Upstream's own bench made it worth offering: +14.6% on the QSA attention component, +1.19% prompt, −1.05% latency, token ids unchanged (`bench/results/2026-10-08-gfx906-qsa-query-swizzle`). |
 
 ## Adding a patch

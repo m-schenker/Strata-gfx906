@@ -25,12 +25,14 @@ from __future__ import annotations
 
 import argparse
 import collections
+import concurrent.futures
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # gfx906: 64 KiB VGPR file per SIMD = 256 VGPR (dwords) per SIMD; 64 KiB LDS per CU; wave64.
@@ -51,40 +53,53 @@ FIELDS = {
 }
 
 
-def find_llvm_readobj(explicit: str | None) -> str:
+def find_tools(explicit: str | None) -> dict:
+    """llvm-readelf, llvm-objcopy and clang-offload-bundler from the ROCm tree (or PATH)."""
+    roots = []
     if explicit:
-        return explicit
+        roots.append(Path(explicit).parent)
     for env in ("ROCM_PATH", "ROCM_ROOT", "HIP_PATH"):
-        root = os.environ.get(env)
-        if root:
-            for cand in (Path(root) / "llvm/bin/llvm-readobj", Path(root) / "bin/llvm-readobj"):
-                if cand.is_file():
-                    return str(cand)
-    found = shutil.which("llvm-readobj")
-    if found:
-        return found
-    sys.exit("llvm-readobj not found: pass --llvm-readobj PATH (it is in the ROCm tree's llvm/bin)")
+        if os.environ.get(env):
+            roots += [Path(os.environ[env]) / "llvm/bin", Path(os.environ[env]) / "bin"]
+    tools = {}
+    for key, name in (("readelf", "llvm-readelf"), ("objcopy", "llvm-objcopy"),
+                      ("bundler", "clang-offload-bundler")):
+        found = next((r / name for r in roots if (r / name).is_file()), None)
+        if not found:
+            which = shutil.which(name)
+            found = Path(which) if which else None
+        if not found:
+            sys.exit(f"{name} not found: pass --llvm-readobj with the path of any ROCm llvm tool "
+                     f"(they sit together in <rocm>/llvm/bin)")
+        tools[key] = str(found)
+    return tools
 
 
 def parse_metadata(text: str) -> list[dict]:
-    """The YAML `llvm-readobj --amdhsa-code-object-metadata` prints, flattened to one dict per kernel."""
+    """The metadata `llvm-readelf --notes` / `llvm-readobj` print, flattened to one dict per kernel.
+
+    Kernel records are the list items of `amdhsa.kernels:` (a dash at two spaces of indent); the fields inside them are
+    plain `key: value` lines (`        .vgpr_count:     96`).  Argument records are deeper and are ignored here.
+    """
     out: list[dict] = []
     cur: dict | None = None
     for raw in text.splitlines():
         line = raw.rstrip()
-        m = re.match(r"^\s*-\s*\.name:\s*(.+?)\s*$", line)
-        if m:
+        if re.match(r"^\s{2}-\s", line):                      # a new kernel record
             if cur:
                 out.append(cur)
-            cur = {"name": m.group(1)}
+            cur = {}
+            m = re.match(r"^\s{2}-\s*\.name:\s*(.+?)\s*$", line)
+            if m:
+                cur["name"] = m.group(1)
             continue
         if cur is None:
             continue
-        m = re.match(r"^\s*(\.\w+):\s*(\S+)?\s*$", line)
+        m = re.match(r"^\s*\.(\w+):\s*(\S+)\s*$", line)
         if m:
             key, val = m.group(1), m.group(2)
             for short, long in FIELDS.items():
-                if long == key and val is not None:
+                if long.lstrip(".") == key:
                     try:
                         cur[short] = int(val)
                     except ValueError:
@@ -109,36 +124,80 @@ def instance_name(symbol_or_name: str) -> str:
     return s[:cut]
 
 
-def collect(build: Path, readobj: str, jobs: int) -> list[dict]:
+def notes_for(path: Path, tools: dict, scratch: Path) -> str:
+    """The AMDGPU metadata YAML of one object.
+
+    A HIP host object keeps its device code in `.hip_fatbin` (a clang-offload-bundle), so the section is dumped with
+    llvm-objcopy, unbundled for gfx906 with clang-offload-bundler, and read with `llvm-readelf --notes`, which prints
+    the metadata as YAML.  An object that already IS the device object is read directly.
+    """
+    tmp = scratch / (path.name + ".fat")
+    res = subprocess.run([tools["objcopy"], "--dump-section", f".hip_fatbin={tmp}", str(path)],
+                         capture_output=True, text=True, timeout=300)
+    read_from = path
+    if res.returncode == 0 and tmp.is_file() and tmp.stat().st_size:
+        listing = subprocess.run([tools["bundler"], "-list", "-type=o", "-input", str(tmp)],
+                                 capture_output=True, text=True, timeout=300)
+        target = next((l.strip() for l in listing.stdout.splitlines()
+                       if l.strip().startswith("hip") and "gfx906" in l), "")
+        dev = scratch / (path.name + ".dev.o")
+        if target:
+            res = subprocess.run([tools["bundler"], "-unbundle", "-type=o", "-targets", target,
+                                  "-input", str(tmp), "-output", str(dev)],
+                                 capture_output=True, text=True, timeout=300)
+            if res.returncode == 0 and dev.is_file():
+                read_from = dev
+    res = subprocess.run([tools["readelf"], "--notes", str(read_from)], capture_output=True, text=True, timeout=300)
+    return res.stdout
+
+
+def demangle(names: list[str]) -> dict:
+    """Mangled -> readable, with the toolchain's own demangler when one is on PATH (llvm-cxxfilt and c++filt both read
+    stdin and answer one line per name).  A missing demangler leaves the mangled names, which still sort."""
+    for cand in ("llvm-cxxfilt", "c++filt"):
+        exe = shutil.which(cand)
+        if not exe or not names:
+            continue
+        try:
+            res = subprocess.run([exe], input="\n".join(names), capture_output=True, text=True, timeout=300)
+        except subprocess.SubprocessError:
+            continue
+        out = res.stdout.splitlines()
+        if len(out) == len(names):
+            return dict(zip(names, out))
+    return {}
+
+
+def collect(build: Path, tools: dict, jobs: int) -> list[dict]:
     objs = sorted(p for p in build.rglob("*.o") if p.is_file())
     if not objs:
         sys.exit(f"no object files under {build}: is this a finished build tree?")
     rows: list[dict] = []
-    batch = 64
-    for i in range(0, len(objs), batch):
-        chunk = objs[i:i + batch]
-        cmd = [readobj, "--amdhsa-code-object-metadata", "--elf-output-style=GNU"] + [str(p) for p in chunk]
-        try:
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-        except subprocess.TimeoutExpired:
-            continue
-        for k in parse_metadata(res.stdout):
-            name = k.get("name") or k.get("symbol") or "?"
-            rows.append({
-                "kernel": instance_name(str(name)),
-                "object": chunk[0].name if len(chunk) == 1 else os.path.commonprefix([str(p) for p in chunk]) or "",
-                "vgpr": k.get("vgpr", 0),
-                "vgpr_spill": k.get("vgpr_spill", 0),
-                "sgpr": k.get("sgpr", 0),
-                "sgpr_spill": k.get("sgpr_spill", 0),
-                "lds": k.get("lds", 0),
-                "private": k.get("private", 0),
-                "max_wg": k.get("max_wg", 0),
-            })
+    with tempfile.TemporaryDirectory(prefix="hipspill-") as tmpd:
+        scratch = Path(tmpd)
+
+        def one(obj: Path) -> list[dict]:
+            out = []
+            for k in parse_metadata(notes_for(obj, tools, scratch)):
+                out.append({
+                    "kernel": instance_name(str(k.get("name") or k.get("symbol") or "?")),
+                    "object": str(obj.relative_to(build)),
+                    "vgpr": k.get("vgpr", 0),
+                    "vgpr_spill": k.get("vgpr_spill", 0),
+                    "sgpr": k.get("sgpr", 0),
+                    "sgpr_spill": k.get("sgpr_spill", 0),
+                    "lds": k.get("lds", 0),
+                    "private": k.get("private", 0),
+                    "max_wg": k.get("max_wg", 0),
+                })
+            return out
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
+            for rows_of_obj in pool.map(one, objs):
+                rows.extend(rows_of_obj)
     for r in rows:
-        v = max(1, r["vgpr"] or 1)
-        per_wave = (v + 3) // 4 * 4            # VGPRs are allocated in fours
-        r["waves"] = VGPR_PER_SIMD // per_wave      # waves of this kernel per SIMD, VGPR-limited
+        per_wave = (max(1, r["vgpr"]) + 3) // 4 * 4      # VGPRs are allocated in fours
+        r["waves"] = VGPR_PER_SIMD // per_wave           # waves of this kernel per SIMD, VGPR-limited
         r["lds_wgs"] = (LDS_PER_CU // r["lds"]) if r["lds"] else 0
     return rows
 
@@ -162,20 +221,22 @@ def to_json(rows: list[dict]) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--build", required=True, help="a finished CMake build tree (object files are searched recursively)")
-    ap.add_argument("--llvm-readobj", help="the ROCm tree's llvm-readobj (default: $ROCM_PATH/llvm/bin, then PATH)")
+    ap.add_argument("--llvm-readobj", help="any ROCm llvm tool, used to locate the tree (default: $ROCM_PATH/llvm/bin, then PATH)")
     ap.add_argument("--baseline", help="a baseline JSON from --write-baseline: regressions against it fail")
     ap.add_argument("--write-baseline", metavar="FILE", help="write the current table as a baseline JSON and stop")
     ap.add_argument("--list", action="store_true", help="every instance, not just the worst per kernel")
     ap.add_argument("--sort", default="spills", choices=["spills", "vgpr", "lds", "private"],
                     help="how to sort the table (default: spills)")
     ap.add_argument("--top", type=int, default=0, help="shown rows (0 = all)")
-    ap.add_argument("--jobs", type=int, default=1, help="reserved; readobj batches are sequential")
+    ap.add_argument("--no-demangle", dest="demangle", action="store_false", help="keep the mangled names")
+    ap.add_argument("--jobs", type=int, default=4, help="objects read at once (default 4)")
     a = ap.parse_args()
 
-    readobj = find_llvm_readobj(a.llvm_readobj)
-    rows = collect(Path(a.build), readobj, a.jobs)
+    tools = find_tools(a.llvm_readobj)
+    rows = collect(Path(a.build), tools, a.jobs)
     if not rows:
-        sys.exit("llvm-readobj printed no AMDGPU metadata: is this a HIP build tree (gfx906), not a CPU/other one?")
+        sys.exit("no AMDGPU metadata found: is this a HIP build tree for gfx906 (not a CPU build), and is the ROCm "
+                 "llvm-readelf the one on PATH?")
     table = rows if a.list else worst_per_kernel(rows)
 
     key = {"spills": lambda r: (r["vgpr_spill"] + r["private"], r["vgpr"]),
@@ -184,10 +245,12 @@ def main() -> int:
            "private": lambda r: r["private"]}[a.sort]
     table.sort(key=key, reverse=True)
     shown = table[: a.top] if a.top else table
+    demangled = demangle([r["kernel"] for r in table]) if a.demangle else {}
 
-    print(f"{'kernel':<64} {'vgpr':>5} {'spill':>6} {'sgpr':>5} {'sspill':>6} {'lds':>7} {'priv':>6} {'waves':>5}")
+    print(f"{'kernel':<84} {'vgpr':>5} {'spill':>6} {'sgpr':>5} {'sspill':>6} {'lds':>7} {'priv':>6} {'waves':>5}")
     for r in shown:
-        print(f"{r['kernel'][:64]:<64} {r['vgpr']:>5} {r['vgpr_spill']:>6} {r['sgpr']:>5} {r['sgpr_spill']:>6} "
+        label = demangled.get(r["kernel"], r["kernel"])
+        print(f"{label[:84]:<84} {r['vgpr']:>5} {r['vgpr_spill']:>6} {r['sgpr']:>5} {r['sgpr_spill']:>6} "
               f"{r['lds']:>7} {r['private']:>6} {r['waves']:>5}")
     spilling = [r for r in table if r["vgpr_spill"] or r["private"]]
     print(f"\n{len(table)} kernel(s), {len(spilling)} with spills or local memory; worst: "

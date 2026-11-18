@@ -1,0 +1,2 @@
+device 0: AMD Instinct MI60 / MI50
+  compute capability 9.0, 32.0 GiB

@@ -1,0 +1,42 @@
+# backend: both (kernels shared by both engines; the change only fires in a gfx906 build).
+#
+# Default the trellis expert kernels (144 TQ2_T, 145 TQK6, 146 TQK7) to a shared-memory copy of their int8 codebook on
+# gfx906.  tq_stage_on() returned false for every HIP build, so on an MI50 the 4 KB codebook of tq_lut_i8 was read from
+# global memory for every distinct line of every expert row - and on this card that read, not the arithmetic, is the
+# kernel.  (The same staging is what makes the CUDA path's trellis kernels fast; upstream enabled it for cc < 6.1 and
+# for the sm_86 default, never for HIP.)
+#
+# Measured on one MI50 32 GB, `native_expert_bench` against the real Gyro-M GGUF (layer 0, 16 experts, reference mode 0,
+# bitwise equal - "0 differing"):
+#
+#   gate/up + down, 1 token per group:   294.1 us -> 120.4 us   (gu 186.2 -> 81.4 us, down 110.4 -> 42.6 us)
+#   gate/up + down, 4 tokens per group:  385.4 us -> 171.7 us   (gu 244.9 -> 114.4 us, down 143.1 -> 61.5 us)
+#
+# and end to end on the same card and model (tools/strata_bench.py, 3126-token prompt, 128 decoded tokens, 3 reps,
+# median of the warm reps): decode 38.9 -> 48.1 tok/s (+24 %), prompt unchanged inside the noise (210.9 -> 204.2 tok/s).
+# See m-schenker/gfx906/OPTIMIZATION-RESULTS.md.
+#
+# STRATA_TQ_STAGE=0 still turns it off, and the wave32 HIP backend (-DSTRATA_ENABLE_HIP) is untouched: it was not
+# measured there, so it keeps the old kernels.
+
+diff --git a/src/kernels/cuda/iq_kernels.cu b/src/kernels/cuda/iq_kernels.cu
+index d329558..c44f183 100644
+--- a/src/kernels/cuda/iq_kernels.cu
++++ b/src/kernels/cuda/iq_kernels.cu
+@@ -3454,8 +3454,14 @@ bool stage_tables_on() {
+ bool tq_stage_on() {
+     static const int env = [] { const char* v = std::getenv("STRATA_TQ_STAGE"); return v != nullptr && v[0] != '\0' ? (v[0] != '0' ? 1 : 0) : -1; }();
+     if (env >= 0) return env == 1 && g_stage_grid;
+-#if defined(__HIPCC__)
+-    return false;
++#if defined(STRATA_HIP_GFX906)
++    // gfx906: ON by default.  The 4 KB int8 codebook was read from global memory per distinct line here, and on this card
++    // (wave64, 64 KiB LDS, no matrix cores) that read IS the trellis kernel: native_expert_bench, Gyro-M layer 0, 16
++    // experts, gate/up + down 294 -> 120 us at 1 token and 385 -> 172 us at 4 tokens per group, bitwise identical.
++    // STRATA_TQ_STAGE=0 is the way back.
++    return g_stage_grid;
++#elif defined(__HIPCC__)
++    return false;   // the wave32 HIP cards: not measured, so the old kernels stay
+ #else
+     if (!g_stage_grid) return false;
+     static int per_dev[64];   // 0 unknown, 1 no, 2 yes

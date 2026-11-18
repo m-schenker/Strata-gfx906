@@ -1,0 +1,52 @@
+# backend: both (a build change: it makes the rocBLAS prompt path exist on gfx906 for either engine).
+#
+# The prompt path's FP16-out rocBLAS GEMMs and the STRATA_ROCBLAS_TUNING solution table are compiled behind
+# STRATA_ROCBLAS_AVAILABLE, which only the wave32 HIP backend sets (cmake/hip_backend.cmake) and only
+# `if(STRATA_ENABLE_HIP AND ...)` consumes (cmake/strata_gpu_engine.cmake).  A gfx906 build is
+# STRATA_HIP_GFX906=ON, STRATA_ENABLE_HIP=OFF, so on an MI50/MI60:
+#
+#   - src/prefill/gemm.cu compiles without STRATA_ROCBLAS_AVAILABLE (the `#if defined(__HIPCC__) && defined(...)`
+#     blocks at lines 61, 466, 683, 715, 788, 1355): the prompt's 16-bit GEMMs never reach rocBLAS and a table is
+#     never read;
+#   - tools/hip/tune_rocblas is not a target, so a gfx906 build cannot even make a table.
+#
+# Measured on one MI50 32 GB, Qwen3.8-Flash-Next-Gyro-M-TQ2_0, 4K prompt reading 232.3 tok/s on this fork against
+# 392.3 tok/s on the same card's 0.2.1 install, which carries both halves of this gate (m-schenker/gfx906/
+# OPTIMIZATION-RESULTS.md, rounds R0/R1).  rocBLAS ships gfx906 device code, so nothing else is missing: with the gate
+# open and a table calibrated on the card, the engine's own log shows the tuned launches.
+#
+# Ported from the MI50 port's 01-gfx906-build.patch (Strata 0.2.1), unchanged in intent: find rocBLAS in the gfx906
+# toolchain, and open the consumer's gate for this backend.  A tree without the rocBLAS CMake package keeps the old
+# behaviour and says so at configure time.
+
+diff --git a/cmake/backends/hip.cmake b/cmake/backends/hip.cmake
+--- a/cmake/backends/hip.cmake
++++ b/cmake/backends/hip.cmake
+@@ -11,6 +11,15 @@
+   enable_language(HIP)
+   find_package(hip REQUIRED)
+   find_package(hipblas REQUIRED)
++  # The prompt path's rocBLAS solution table (STRATA_ROCBLAS_TUNING).  rocBLAS ships gfx906 device code, so unlike the
++  # wave32 HIP backend this build can have the table too: tools/hip/tune_rocblas calibrates the dense GEMMs on the card.
++  find_package(rocblas CONFIG QUIET)
++  if(TARGET roc::rocblas)
++    set(STRATA_ROCBLAS_AVAILABLE ON)
++  else()
++    set(STRATA_ROCBLAS_AVAILABLE OFF)
++    message(STATUS "Strata: gfx906 build without the rocBLAS CMake package; the solution table is unavailable")
++  endif()
+   add_library(CUDA::cudart INTERFACE IMPORTED)
+   target_link_libraries(CUDA::cudart INTERFACE hip::host)
+   target_compile_definitions(CUDA::cudart INTERFACE STRATA_HIP_GFX906=1 __HIP_PLATFORM_AMD__=1)
+diff --git a/cmake/strata_gpu_engine.cmake b/cmake/strata_gpu_engine.cmake
+--- a/cmake/strata_gpu_engine.cmake
++++ b/cmake/strata_gpu_engine.cmake
+@@ -460,7 +460,7 @@
+     add_executable(tune_hipblaslt tools/hip/tune_hipblaslt.cpp)
+     target_link_libraries(tune_hipblaslt PRIVATE hip::host roc::hipblas roc::hipblaslt)
+   endif()
+-  if(STRATA_ENABLE_HIP AND STRATA_ROCBLAS_AVAILABLE)
++  if((STRATA_ENABLE_HIP OR STRATA_HIP_GFX906) AND STRATA_ROCBLAS_AVAILABLE)
+     # the prompt path's rocBLAS solution table (STRATA_ROCBLAS_TUNING; tools/hip/tune_rocblas makes one)
+     target_compile_definitions(strata_prefill PRIVATE STRATA_ROCBLAS_AVAILABLE=1)
+     target_link_libraries(strata_prefill PRIVATE roc::rocblas)

@@ -1,0 +1,67 @@
+# backend: both (tools/hip/tune_rocblas.cpp, architecture-generic: it only changes which shapes and buckets the tool
+# calibrates, for every HIP card that uses a rocBLAS table).
+#
+# Two measured fixes to the tuner, both from the MI50 port's 0.2.1 work and re-derived here:
+#
+#   1. Token buckets below 256.  Table::closest() picks the NEAREST bucket, and the token counts a real prompt and
+#      verify window ask for are mostly small (STRATA_ROCBLAS_VERBOSE=1 on a serving MI50: T = 69, 108, 745, 802, 1024,
+#      2241, 7168).  With buckets from 256 up, every T <= 128 ran the kernel that was tuned at T=256.
+#   2. The router's padded ldy.  The engine calls that product with ldy = 96, so a row tuned at ldy = N never matched it
+#      ("no row for T=69 N=48 K=2560 ldy=96"); the shape list now carries {48, 2560, 96} and ldy defaults to N.
+#
+# Neither changes what a table means: rows are (type N K ldy T solution) as before, and a card whose shapes differ
+# simply does not match the extra rows.
+
+diff --git a/tools/hip/tune_rocblas.cpp b/tools/hip/tune_rocblas.cpp
+--- a/tools/hip/tune_rocblas.cpp
++++ b/tools/hip/tune_rocblas.cpp
+@@ -14,7 +14,12 @@
+ //   cmake --build build-hip --target tune_rocblas
+ //   ./build-hip/tune_rocblas --tuning-out tools/hip/<arch>-rocblas-<version>.txt
+ //
+-// Defaults: the engine's 14 FP16 dense shapes at T = 256 ... 8192 (--tokens); --case T,N,K,ldy adds one shape.
++// Defaults: the engine's 15 FP16 dense shapes at T = 1 ... 8192 (--tokens); --case T,N,K,ldy adds one shape.
++//
++// Why buckets below 256 (measured on an MI50): Table::closest() picks the NEAREST bucket, and the token counts a
++// real prompt and verify window ask for are mostly small - STRATA_ROCBLAS_VERBOSE=1 on the serving engine showed
++// T = 69, 108, 745, 802, 1024, 2241, 7168, 7664, 8192.  With buckets from 256, every T <= 128 ran the kernel
++// tuned at T=256.
+ #define ROCBLAS_BETA_FEATURES_API
+ #include <hip/hip_runtime.h>
+ #include <hip/hip_fp16.h>
+@@ -50,7 +55,7 @@
+ struct Shape { int t, n, k, ldy; };
+ struct Options {
+     std::vector<Shape> shapes;
+-    std::vector<int> tokens{256, 512, 768, 1024, 1536, 2048, 4096, 8192};
++    std::vector<int> tokens{1, 8, 16, 32, 64, 128, 256, 512, 768, 1024, 1536, 2048, 4096, 8192};
+     std::string tuning_out;
+     double min_gain = 1.05;
+     bool explicit_shapes = false;
+@@ -82,7 +87,8 @@
+ }
+ void usage(const char* p) {
+     std::printf("Usage: %s [--case T,N,K,ldy]... [--tokens T1,T2,...] [--min-gain 1.05] [--tuning-out PATH]\n", p);
+-    std::printf("Defaults: the engine's 14 FP16 dense shapes (ldy = N) at T = 256,512,768,1024,1536,2048,4096,8192.\n");
++    std::printf("Defaults: the engine's 15 FP16 dense shapes at T = 1,8,16,32,64,128,256,512,768,1024,1536,"
++                "2048,4096,8192.\n");
+ }
+ Options options(int argc, char** argv) {
+     Options o;
+@@ -109,10 +115,12 @@
+     if (!o.explicit_shapes) {
+         // Qwen3.8-Flash-Next's dense FP16 products, prompt_f16() on (the hc read, GDN and QSA projections, the router
+         // and the shared expert), ldy = N for every one of them.  N K as the engine calls Gemm (ROCBLAS_LAYER=2).
+-        const int nk[][2] = {{10240, 2560}, {12288, 2560}, {6144, 2560}, {2560, 6144}, {2560, 640}, {2560, 2560},
+-                             {640, 2560}, {512, 2560}, {128, 2560}, {48, 2560}, {320, 10240}, {10240, 320},
+-                             {4, 10240}, {1, 2560}};
+-        for (const auto& p : nk) for (int t : o.tokens) o.shapes.push_back({t, p[0], p[1], p[0]});
++        // ldy = 0 means ldy = N.  The last entry carries the router's padded ldy: the engine calls that product with
++        // ldy = 96, so a row tuned at ldy = N never matched it ("no row for T=69 N=48 K=2560 ldy=96", MI50).
++        const int nk[][3] = {{10240, 2560, 0}, {12288, 2560, 0}, {6144, 2560, 0}, {2560, 6144, 0}, {2560, 640, 0},
++                             {2560, 2560, 0}, {640, 2560, 0}, {512, 2560, 0}, {128, 2560, 0}, {48, 2560, 0},
++                             {48, 2560, 96}, {320, 10240, 0}, {10240, 320, 0}, {4, 10240, 0}, {1, 2560, 0}};
++        for (const auto& p : nk) for (int t : o.tokens) o.shapes.push_back({t, p[0], p[1], p[2] ? p[2] : p[0]});
+     }
+     return o;
+ }
