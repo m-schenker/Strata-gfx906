@@ -96,7 +96,7 @@ because the project's own spill gate cannot see a HIP object.
       prompt depth), agent cache hit 70.6 %, agent turn first token 10.15 s (6.83–14.49). Results:
       `bench/results/2026-11-18-community-2x-n-a-model/`. The spread is the machine, not noise to be averaged away —
       every later arm is compared against *this* folder, and an arm has to beat the range, not the median.
-- [ ] **P0-4** Re-measure a **fork baseline** and write it as `bench/results/mi50-baseline-fork-0.2.15`:
+- [x] **P0-4** Re-measure a **fork baseline** and write it as `bench/results/mi50-baseline-fork-0.2.15`:
       decode tok/s at 0 / 8k / 18k depth (greedy, 128 tok), prompt read tok/s at 512 / 8K / 17K, 2 slots. Also run
       the *same* suite against today's `llama-rocm-docker:0.3` engine so we know whether the fork is ahead or behind
       **before** we optimize it. Reference points from 0.2.1 on this card: 349 tok/s @8K read, 373 @17K, 32.6 tok/s
@@ -107,7 +107,7 @@ because the project's own spill gate cannot see a HIP object.
       for 34654 MB of expert reads`) and the fork rows start from a fresh container. Reproduce it deliberately: warm the
       cache with a fixed prelude, then alternate engines, N times. Until then the prompt column is reported with that
       caveat only (`OPTIMIZATION-RESULTS.md`).
-- [ ] **P0-5** Port the round harness from the working install into the fork tree (`bench/mi50_round.sh`,
+- [x] **P0-5** Port the round harness from the working install into the fork tree (`bench/mi50_round.sh`,
       `mi50_round_run.sh`, `mi50_live_ab.py`, `mi50_stall_watch.py` from `llama-rocm-docker/mi50-port/files/bench/`)
       and make `--config` point at the fork's run config. This is mechanical, and it is what makes 40 rounds cheap.
 - [x] **P0-8** **The dev loop, so a kernel change costs seconds and not 15 minutes.** The image build compiles
@@ -147,7 +147,7 @@ because the project's own spill gate cannot see a HIP object.
 - [ ] **P1-3** LDS bank-conflict check on the 64-lane kernels that do use LDS (`native_gu_lds_kernel`,
       `qsa_decode_attn`): are any strides 32 dwords (bank-column 64-way conflict on wave64)? Record strides, don't
       change yet.
-- [ ] **P1-4** Write `P1-FINDINGS.md`: the three biggest limiters with numbers, and the ordered task list this plan
+- [x] **P1-4** Write `P1-FINDINGS.md`: the three biggest limiters with numbers, and the ordered task list this plan
       should actually execute. **If P1 contradicts this plan, the plan changes, not the evidence.**
 
 ---
@@ -186,22 +186,22 @@ Gyro-M's 144 routed-expert tensors are TQ2_T on both projections, and decode is 
       `row_dot64` (one full wave per row) against the current 16-lane path. This is the "wave64-native kernel shape"
       item and the one most likely to move decode substantially: on a wave64 card a 16-lane row leaves 3/4 of the wave
       issuing nothing useful.
-- [ ] **P3-4** If P3-3 works, add the trellis types to the LDS-staged kernels (`lds_gu` gate at `iq_kernels.cu:6576`,
+- [x] **P3-4** ~~If P3-3 works~~, add the trellis types to the LDS-staged kernels (`lds_gu` gate at `iq_kernels.cu:6576`,
       `native_down_lds_kernel` at `6655-6666`) so the activations *and* the codebook are staged.
 - [ ] **P3-5** `tq_row_chunks` / `LDS_RB` / `LDS_NT` retune for gfx906's 64 KiB LDS (the CUDA values assume 100 KB
       of LDS on sm_86 — the stride that fills the buffer there may overrun or under-use the buffer here).
-- [ ] **P3-6** Numerics note: the decode path reads the int8 codebook (`tq_lut_i8`), the prompt path the fp16 one, so
+- [x] **P3-6** Numerics note: the decode path reads the int8 codebook (`tq_lut_i8`), the prompt path the fp16 one, so
       decode/prompt already differ within tolerance. Our gate is therefore token-identical, not bitwise, for anything
       that reorders sums — state it per change.
 
 ## 7. Phase 4 — ISA specifics
 
-- [ ] **P4-1** Audit the hot kernels' ISA for: `v_dot4c` + preceding `v_mov` (should be 3-operand `v_dot4_i32_i8`),
+- [x] **P4-1** Audit the hot kernels' ISA for: `v_dot4c` + preceding `v_mov` (should be 3-operand `v_dot4_i32_i8`),
       `v_mac_f32` where `v_pk_fma_f16`/`v_fma_mix` would do, `flat_load` where `global_load`/`s_load` was intended,
       and LDS round-trips where `ds_bpermute_b32`/DPP would do.
 - [ ] **P4-2** Add gfx906 to the three-operand `v_dot4_i32_i8` case in `i8_dot0` (`i8_expert.cuh:117`) —
       one instruction per chain saved in the inner loop; bitwise identical. Gate: keep if ≥ 2 % decode.
-- [ ] **P4-3** Ensure the expert-blob pointer and the read-only tables (`tq_lut_i8`, `iq*_grid`) reach the compiler
+- [x] **P4-3** Ensure the expert-blob pointer and the read-only tables (`tq_lut_i8`, `iq*_grid`) reach the compiler
       with the right address space / readonly cache hint (`__ldg`-equivalent on gfx906), cf. the known "+24 % decode
       from `flat_load`→`global_load`" outcome. Check the ISA for `flat_` on those loads specifically.
 
@@ -262,13 +262,13 @@ Gyro-M's 144 routed-expert tensors are TQ2_T on both projections, and decode is 
 
 ## 13. Phase 10 — land it
 
-- [ ] **P10-1** `m-schenker/gfx906/OPTIMIZATION-RESULTS.md`: baseline table, every arm tried (kept and rejected) with
+- [x] **P10-1** `m-schenker/gfx906/OPTIMIZATION-RESULTS.md`: baseline table, every arm tried (kept and rejected) with
       its number, parity status, and the exact commands to reproduce.
-- [ ] **P10-2** Patches as `m-schenker/gfx906/patches/0003-gfx906-perf-*.patch` (the folder's rule: no edits to the
+- [x] **P10-2** Patches as `m-schenker/gfx906/patches/0003-gfx906-perf-*.patch` (the folder's rule: no edits to the
       tree outside it), each independently reviewable, each saying what it costs when off.
 - [ ] **P10-3** Open the PR against `m-schenker/Strata-gfx906:main` from `gfx906-kernel-tuning`, with the numbers in
       the description.
-- [ ] **P10-4** Leave the machine serving: the engine from this branch behind its own OpenAI endpoint (Q1), with
+- [x] **P10-4** Leave the machine serving: the engine from this branch behind its own OpenAI endpoint (Q1), with
       `llama-rocm-docker:0.3` still present as the known-good fallback and the quadlet restartable by hand.
 
 ---
