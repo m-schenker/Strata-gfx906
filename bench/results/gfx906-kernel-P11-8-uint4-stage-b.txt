@@ -1,0 +1,7 @@
+# gfx906 kernel arm: P11-8-uint4-stage-b
+# native_expert_bench, /models/models/Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf layer 0, reference mode 0, median of 3
+ 8 x 1  all    77.9 us  gu    52.2 us  down    23.6 us   bitwise
+16 x 1  all   118.5 us  gu    79.0 us  down    41.3 us   bitwise
+16 x 2  all   135.9 us  gu    88.3 us  down    47.8 us   bitwise
+16 x 4  all   171.8 us  gu   112.2 us  down    59.1 us   bitwise
+32 x 1  all   204.9 us  gu   143.4 us  down    67.0 us   bitwise

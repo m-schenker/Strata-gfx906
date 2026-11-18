@@ -1,0 +1,4 @@
+# gfx906 decode probe: all-patches   2026-11-18T19:14:58+01:00
+rep 1: 65 tok 1.099 s, 129 tok 3.334 s -> decode 28.6 tok/s
+rep 2: 65 tok 1.086 s, 129 tok 2.151 s -> decode 60.1 tok/s
+rep 3: 65 tok 2.044 s, 129 tok 2.070 s -> decode 2461.5 tok/s

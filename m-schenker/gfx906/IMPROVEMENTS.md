@@ -347,6 +347,33 @@ checked without a profiler.
 | **Wave64 GDN decode** (`§9`) | not applicable to this model: Gyro-M has no Gated Delta Net layers, so there is nothing to measure end to end on this box | the kernel-level harness exists (`bench/gdn_chunk_bench.cpp`); a GDN model is needed for the number that matters | no |
 | **`v_dot8_i32_i4`** (`§6` above, and `DOT8-KIT.md`) | rebuilt as a portable kit with real Q4_0 rows out of a GGUF, and the dp4a baseline corrected to Q4_0's per-block bias trick, so the comparison is instruction-for-instruction | **real Q4_0 weights** (248320 x 2560 `output.weight` of the MTP drafter), card exclusive, median of 3: dp4a 0.0320/0.0869/0.1054 ms against dot8 0.0205/0.0356/0.0708 ms at 8/16/32 groups — **+55 %, +141 %, +49 %**. Accuracy: 0.5 % relative RMS for the 8-bit arm, 8.9-9.6 % for the 4-bit one. Still blocked on the same two things (4-bit activations; IQ/TQ codebook formats) | ready to test on a Q4_0 box: `bench/gfx906_dot8_kit.sh`, plan in `DOT8-KIT.md` |
 
+### Round 2: the same queue, each lever now with its own run
+
+Everything below was taken after the first pass, on an exclusive card, through `bench/gfx906_build.sh` (sync + re-apply
+the branch's patches + rebuild) and the arm named in each row.
+
+| lever | implementation | measured | outcome |
+|---|---|---|---|
+| **wide LDS codebook staging** (`patches/0007`) | the trellis codebook copy is `uint4` per thread (256 accesses) instead of `uint32` (1024), same 4 KB, same places | bitwise; 10 of 10 runs within ±2.5 %, 9 of 10 faster: 8x1 79.5→78.4/77.9, 16x1 118.8→115.7/118.5, 16x2 137.8→137.3/135.9, 16x4 174.4→178.5/171.8, 32x1 207.4→200.5/204.9 µs | **shipped** (free instruction reduction, no regression) |
+| **trellis reads in the global address space** (`patches/0008`) | the three weight-read sites (u16 stream, u8 state byte, f16 scale) are qualified address space 1; the ISA goes from 5 × `flat_load` to 12 × `global_load` + 1 flat | bitwise; against the same build without it: 8x1 76.4 (−2.0 %), 16x1 113.7 (−2.5 %), 16x2 136.2 (0.0 %), 16x4 170.2 (−2.0 %), 32x1 202.7 (0.0 %) µs — **and unlike the first attempt it moves the 2–5-token verify windows** | **shipped** |
+| **software-pipelined weight prefetch** (`optional/0010`) | next iteration's fragment loaded into registers before the current FMA chain in `native_mmvq_multi_kernel`; `STRATA_MMVQ_PF=0` reverts | bitwise; via the new `tools/hip/gfx906_dense_bench.cpp` (engine launcher, k 2560 n 5120): Q6_K 31.10 → 31.00 µs (+0.3 %, noise), Q8_0 22.46 → 22.92 (−2.0 %), Q4_0 19.92 → 20.67 (−3.6 %) | **not shipped** — the plain kernel already runs at 346–620 GB/s of weights; hipfire's +4.8 % was a one-warp-per-row shape, not this one |
+| **router launch shape** (`tools/hip/gfx906_router_lab.cpp`) | four variants against the engine's kernel, ids and weights checked against it: A as shipped, B one warp instead of eight, C one 64-lane wave (8 values a lane), D per-lane sorted list, E sort + merge tree | **A 15.4-16.9 µs a call** (launch overhead alone 1.3 µs, measured with an empty kernel of the same geometry); B 14.5-18.1, C 14.8-19.1, D 92.5, E 32.4 µs. Ids bitwise for A/B/D/E, same set for C | **no change shipped**: the cost is a 100-deep dependent `ds_bpermute` chain (10 ranks × 5 rounds × 2 shuffles = 115 `ds_bpermute_b32`, 2,445 static instructions) and none of the obvious rewrites beats it. At 96 calls a token that chain is ~1.5 ms, so the *next* attempt has to attack the chain itself (a bitonic top-10 over registers), not the geometry |
+| **hyper-connection double quantisation** (`optional/0011`) | `fused_gr_read_multi`'s `STRATA_GR_SPLIT=1` path returned "no q8_1 image" although its up kernels write a tail | **could not be measured**: the A/B needs an engine binary built with the change, and the first attempt at one served degenerate output — which turned out to be a *stale build tree* (the failed DPP variant was still in it), not the patch. Rebuilding the image is the way to settle it | **parked** with the code argument and the first thing to check (does `gr_q8_tail` cover all N columns, or only the block's `UPM_COLS`?) |
+| **codebook staging, end to end** (patch 0005) | `bench/gfx906_tg_probe.sh`, a decode-rate probe that takes two warm requests differing only in `max_tokens` (no TTFT subtraction — a cold cache inverts the difference, which cost two runs) | 6 reps each on the same container recipe: **staging on 69.7 tok/s, staging off 60.8 tok/s (+14.6 %)**. A single 3-rep pair had read 77.9 against 51.5; the 6-rep medians are the number | **the branch's headline change, now with an engine-level figure** |
+| **`v_dot8_i32_i4`** (`DOT8-KIT.md`) | kit rebuilt around real Q4_0 rows and a corrected dp4a baseline | real 248320×2560 `output.weight`: **+55.4 % / +140.6 % / +48.7 %** at 8/16/32 groups; 4-bit activations cost 8.9-9.6 % relative RMS against 0.5 % for q8_1 | **ready for a Q4_0 box** |
+
+Two levers in the queue still have **no implementation**, and both are blocked on hardware this box does not have rather
+than on effort:
+
+* **§2 four-lanes-in-one packing** needs a format whose per-lane weight read is four separate 4-byte loads. In this tree
+  that pattern exists only in `tqp_states8` (7–9 single-byte loads a lane, the Gyro-L `TQP` formats 147–149), and there
+  is no `TQP` pack on this machine to measure it with. The served `TQ2_T` (144) reads two `uint16` + one `uint8` per lane
+  — already coalesced across the warp — and the dense `native_mmvq` path is weight-bandwidth-bound at 346–620 GB/s, so
+  neither has anything for the change to bite on.
+* **§9 wave64 GDN decode** needs a model with Gated Delta Net layers; Gyro-M has none, so there is nothing to benchmark
+  end to end. The kernels (`src/kernels/cuda/gdn.cu`, `native_gdn.cu`, `fused_gdn.cu`) and a harness
+  (`bench/gdn_chunk_bench.cpp`) exist.
+
 ### The method note that cost a round
 
 The first DPP measurement read "no effect" because it measured **a build that did not contain the change**: the image's

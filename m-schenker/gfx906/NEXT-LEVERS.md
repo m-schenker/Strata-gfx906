@@ -187,14 +187,14 @@ IQ/TQ codebook formats - which is what this engine's low-bit experts are.
 | § | lever | status |
 |---|---|---|
 | 1 | `__mul24` | **measured, noise** — bitwise, ±2 % both ways at 8/16/32 groups, kept as `patches/optional/0008`. The kernel is memory-bound, not integer-pipe-bound |
-| 2 | four-lanes-in-one MMVQ packing | not attempted in this pass — it is the one lever left that attacks the memory instruction count (16-byte loads instead of four 4-byte ones) on a kernel that *is* memory-bound; that makes it the strongest remaining candidate |
-| 3 | hyper-connection double quantisation | **found and fixed** (`patches/0006`) — the gfx906 `STRATA_GR_SPLIT=1` path quantised the activations twice per read |
-| 4 | router launch shape | analysed, not shipped: the 8-warp launch with 7 warps exiting is deliberate, the only real lever is a different selection topology (not bitwise), and the kernel is a few µs against a ~400 µs layer |
-| 5 | blob pointer address space | not retried: the earlier +2.8 % (T=1 only) must be re-targeted at a layer's blob *descriptor* and measured at the 2-5-token window |
-| 6 | residual-GEMV pipelining | left in the queue with its published number; needs the stall profile the profiler-less image cannot give |
+| 2 | four-lanes-in-one MMVQ packing | **blocked on hardware**: the pattern it targets (four separate 4-byte weight reads a lane) exists in this tree only in `tqp_states8` (TQP formats 147-149) and there is no TQP pack on this box to measure with; `TQ2_T` reads two uint16 + one uint8 a lane (already coalesced) and the dense `native_mmvq` path is weight-bandwidth-bound at 346-620 GB/s |
+| 3 | hyper-connection double quantisation | **parked** (`optional/0011`): the code path is as described, but the A/B needs an image rebuild (a locally built engine served degenerate output — a stale build tree, not the patch), and the open question is whether `gr_q8_tail` covers all N columns |
+| 4 | router launch shape | **measured hard** (`tools/hip/gfx906_router_lab.cpp`): 15.4-16.9 µs a call (~1.5 ms a token at 96 calls), launch overhead only 1.3 µs; four rewrites (one warp, one 64-lane wave, per-lane sort, sort+merge) all ≥ baseline. The cost is a 100-deep dependent `ds_bpermute` chain — the next attempt must attack the chain (bitonic top-10 in registers), not the geometry |
+| 5 | blob pointer address space | **done and shipped** (`patches/0008`): all three trellis read sites qualified global (ISA: 5 × `flat_load` → 12 × `global_load` + 1), bitwise, -2.0 to -2.5 % at 8x1/16x1 and **also** on the 16x4 verify window where the first attempt moved nothing |
+| 6 | residual-GEMV pipelining | **implemented and measured, not shipped** (`optional/0010`): `native_mmvq_multi_kernel` +0.3 % (Q6_K), -2.0 % (Q8_0), -3.6 % (Q4_0) via `tools/hip/gfx906_dense_bench.cpp` — the plain kernel is already at 346-620 GB/s of weights, which is not hipfire's one-warp-per-row shape |
 | 7 | DPP reductions | **measured, not shipped** (`patches/optional/0009`): the ISA change works, the hardware needs two slots of distance between dependent DPPs, and parity fails in the real kernel even with them |
-| 8 | wide LDS staging | measured where it applies: attention is already b128 everywhere; the trellis codebook staging is one pass per block, not a measurable share |
-| 9 | wave64 GDN | not applicable on this model (no GDN layers) — needs a GDN model for the number that matters |
+| 8 | wide LDS staging | **implemented and shipped** (`patches/0007`): the trellis codebook copy is `uint4` a thread (256 accesses, not 1024); bitwise, 9 of 10 runs faster by 4.3-6.9 µs |
+| 9 | wave64 GDN | **blocked on hardware**: Gyro-M has no Gated Delta Net layers, so there is nothing to benchmark end to end; the kernels and `bench/gdn_chunk_bench.cpp` are there for a box with a GDN model |
 
 `v_dot8_i32_i4` has its own hand-off now: `DOT8-KIT.md` plus `bench/gfx906_dot8_kit.sh`, with real-Q4_0-tensor numbers
 from this card (+55 % / +141 % / +49 % at 8 / 16 / 32 groups, 4-bit activations costing 9 % relative RMS against 0.5 %

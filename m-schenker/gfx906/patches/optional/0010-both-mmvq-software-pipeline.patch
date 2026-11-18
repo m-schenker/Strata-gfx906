@@ -1,0 +1,104 @@
+# backend: both (kernels shared; nothing here is gfx906-specific).
+#
+# NOT SHIPPED - measured as a regression on this card.
+#
+# Software-pipelined weight prefetch in native_mmvq_multi_kernel: the next iteration's weight fragment is loaded into
+# registers before the current iteration's FMA chain runs (the hipfire PR #158 shape), so the fill overlaps arithmetic
+# instead of stalling the load unit at the top of each pass.  Apply order, row order and block order are untouched, so
+# every column is bitwise the unpipelined kernel; STRATA_MMVQ_PF=0 selects the plain loop at run time.
+#
+# Measured with tools/hip/gfx906_dense_bench.cpp (the engine's own launcher out of libstrata_kernels.a, k 2560 n 5120
+# cols 1, one MI50, card exclusive, 300 launches, two runs each):
+#
+#   type    plain loop     pipelined      delta
+#   Q6_K    31.10 / 31.14  31.00 / 31.11   +0.3 %   (noise)
+#   Q8_0    22.46           22.92 / 23.44   -2.0 %
+#   Q4_0    19.92           20.67           -3.6 %
+#
+# The plain kernel is already at 346-620 GB/s of weights with 4 warps and 1-2 rows a block, i.e. enough concurrent loads
+# in flight to cover the fill; the pipeline's extra live registers cost more than the reordering buys.  hipfire's +4.8 %
+# was on a different shape - one warp per row, a long dependent FMA chain, 5 waves a SIMD - which this kernel is not.
+#
+diff --git a/src/kernels/cuda/native_mmvq.cu b/src/kernels/cuda/native_mmvq.cu
+index 21d3392..e7bf6bb 100644
+--- a/src/kernels/cuda/native_mmvq.cu
++++ b/src/kernels/cuda/native_mmvq.cu
+@@ -1226,6 +1226,7 @@ struct SmallTraits<IQ4NLBlock, 4> {
+ // ncols = 1 layout and keeps every column bitwise equal to a single-column call. The UPSTREAM layout is
+ // llama.cpp's generic multi-column table (ncols 2-4: 4 warps; 5-8: 2 warps; always 2 rows per block): faster,
+ // equal to ncols = 1 only to float rounding (the cross-warp reduction groups partial sums differently).
++__device__ int g_mmvq_pf_dev = 1;   // STRATA_MMVQ_PF=0: the plain (unpipelined) loop, for A/B
+ bool g_multi_exact = true;   // until the upstream layout is timed on an idle GPU (plan rule: default only what is measured)
+ // B6 STRATA_B6_MMVQ_ROWS (lab, default 0 = off): see native_mmvq_set_b6_rows
+ // read at first use (not at load): a per-architecture default set at start (nv_defaults.hpp) must be seen
+@@ -1283,6 +1284,42 @@ __global__ void native_mmvq_multi_kernel(const typename F::Block* __restrict__ w
+         }
+         kbx += BPI;
+     }
++    // S26-style software pipeline (the hipfire PR #158 shape, and the one lever in the gfx906 list that needs no change of
++    // numerics): the *next* iteration's weight fragment is loaded into registers before this iteration's FMA chain runs,
++    // so the L2/HBM fill overlaps with arithmetic instead of stalling the load unit at the top of each pass.  The apply
++    // order, the rows and the block order are untouched, so every column is bitwise the unpipelined kernel.
++    // STRATA_MMVQ_PF=0 at run time falls back to the plain loop (the two differ only in where the load is issued).
++    if (g_mmvq_pf_dev && BPI > 0) {
++        const int kqs0 = F::kqs(tid);
++        typename F::W wcur[ROWS];
++        if (kbx < blocks_per_row) {
++#pragma unroll
++            for (int i = 0; i < ROWS; ++i)
++                if (row0 + i < n_out) wcur[i] = F::load(w + std::size_t(row0 + i) * blocks_per_row + kbx, kqs0);
++        }
++        for (; kbx < blocks_per_row; kbx += BPI) {
++            const int kby = kbx * F::KBY;
++            const int kqs = F::kqs(tid);
++            typename F::W wnext[ROWS];
++            if (kbx + BPI < blocks_per_row) {
++#pragma unroll
++                for (int i = 0; i < ROWS; ++i)
++                    if (row0 + i < n_out)
++                        wnext[i] = F::load(w + std::size_t(row0 + i) * blocks_per_row + (kbx + BPI), kqs);
++            }
++#pragma unroll
++            for (int i = 0; i < ROWS; ++i) {
++                if (row0 + i < n_out) {
++                    const typename F::W wv = wcur[i];
++                    wcur[i] = wnext[i];
++#pragma unroll
++                    for (int j = 0; j < NCOLS; ++j)
++                        tmp[j][i] += F::apply(wv, x + std::size_t(j) * x_stride + kby, kqs);
++                }
++            }
++        }
++        goto done_rows;
++    }
+     for (; kbx < blocks_per_row; kbx += BPI) {
+         const int kby = kbx * F::KBY;
+         const int kqs = F::kqs(tid);
+@@ -1297,6 +1334,7 @@ __global__ void native_mmvq_multi_kernel(const typename F::Block* __restrict__ w
+             }
+         }
+     }
++done_rows:;
+     __shared__ float partial[NW - 1 > 0 ? NW - 1 : 1][NCOLS][ROWS][WARP];
+     if (threadIdx.y > 0) {
+ #pragma unroll
+@@ -1543,8 +1581,19 @@ bool b6_launch(const typename F::Block* w, const Q81Block* x, float* y, int n_in
+     }
+ }
+ 
++inline void mmvq_pf_init() {
++    static const bool once = [] {
++        const char* v = std::getenv("STRATA_MMVQ_PF");
++        const int on = !(v && v[0] == '0');
++        cudaMemcpyToSymbol(g_mmvq_pf_dev, &on, sizeof(on));
++        return true;
++    }();
++    (void) once;
++}
++
+ template<typename F, int NCOLS>
+ void launch_multi_n(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, cudaStream_t s) {
++    mmvq_pf_init();
+     const auto* w = static_cast<const typename F::Block*>(weights);
+     const auto* x = static_cast<const Q81Block*>(x_q8_1);
+     if (b6_launch<F, NCOLS>(w, x, y, n_in, n_out, s)) return;   // STRATA_B6_MMVQ_ROWS

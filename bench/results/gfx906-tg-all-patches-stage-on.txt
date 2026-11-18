@@ -1,0 +1,4 @@
+# gfx906 decode probe: all-patches-stage-on   2026-11-18T19:14:25+01:00
+rep 1: request failed (tokens 0/0) - is the engine up?
+rep 2: request failed (tokens 0/0) - is the engine up?
+rep 3: request failed (tokens 0/0) - is the engine up?
