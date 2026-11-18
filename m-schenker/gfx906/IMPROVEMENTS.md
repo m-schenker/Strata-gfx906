@@ -1,0 +1,294 @@
+# gfx906 improvements — one section per patch, with the numbers
+
+Every patch in `patches/` (and the reviewed ones in `patches/optional/`) has a section here: what changed, why that
+makes the card faster, and what it measured. **TG** is token generation (decode, tok/s), **PP** is prompt processing
+(prefill read, tok/s). All numbers are one **Instinct MI50 32 GB** (gfx906, wave64, 60 CU), model
+`Qwen3.8-Flash-Next-Gyro-M-TQ2_0` (91.9 GB, 512 experts × top-10, TQ2_T experts), clocks pinned, nothing else on the
+card, taken with `tools/strata_bench.py` (3 runs, median, range in brackets) unless a row says `native_expert_bench`
+(the kernel-level benchmark, which hashes its output before it times anything). The raw rounds are in
+`bench/results/arm-*` and summarised in `OPTIMIZATION-RESULTS.md`.
+
+The reference row every section compares against is the fork as it was before this branch:
+
+| reference (fork 0.2.15, bare) | TG chat | TG agent | PP 4K | PP 16K |
+|---|---|---|---|---|
+| R1 | 41.9 (29.7–53.9) | 39.1 (31.7–46.2) | 232.3 | 323.3 |
+
+And with all kept patches (this branch as it builds):
+
+| | TG chat | TG agent | PP 4K | PP 16K |
+|---|---|---|---|---|
+| R4 | **50.5** (38.1–70.6) | **50.7** (24.4–72.7) | 246.6 | 390.6 |
+
+---
+
+## 1. `0005-both-gfx906-trellis-lds-codebook-default.patch` — the trellis codebook lives in LDS
+
+**The biggest single win on this card: +26 % TG.**
+
+### What changed
+
+`src/kernels/cuda/iq_kernels.cu`, `tq_stage_on()`: a gfx906 build now returns `true` instead of `false`.
+
+That one predicate decides whether the trellis expert kernels (quant types **144 TQ2_T**, 145 TQK6, 146 TQK7 — the
+formats Gyro packs store their routed experts in) copy their codebook into shared memory at kernel entry
+(`stage_iq_grid`, `s_lut`, 2048 × `u16` = 4 KB) or read it from global memory on every use. Upstream turns the staging
+on for compute capability < 6.1 and for the sm_86 default; the AMD branch returned `false` unconditionally, so no HIP
+card ever staged it. `STRATA_TQ_STAGE=0` is the way back; the env override still wins over the new default, and the
+wave32 HIP backend (`-DSTRATA_ENABLE_HIP`) is untouched because nothing was measured there.
+
+### Why it is faster
+
+A TQ2_T weight block is 128 values described by 8 **trellis steps**; turning a step's state into the four int8 weights
+the dot product needs is a lookup in a 4 KB int8 codebook (`tq_lut_i8`), and a step's state comes from the block's bit
+stream — i.e. the lookups are data-dependent and effectively random. Without staging, every one of them is a global
+load that has to go through L1/L2, per distinct line, per wave, for every expert row the layer touches; the arithmetic
+(4 dp4a per lane) then waits on those loads. On a wave64 card with 64 KiB of LDS per CU and no matrix cores to hide the
+latency behind, the codebook read *is* the kernel.
+
+Staging pays 4 KB of LDS per block once and then serves those lookups at LDS latency. The measured effect on the
+kernel's achieved bandwidth says it plainly: **75 GB/s → 171 GB/s** of expert bytes, at unchanged occupancy.
+
+### Numbers
+
+`native_expert_bench`, real Gyro-M GGUF, layer 0, reference mode 0, **bitwise equal** ("0 differing" — the harness
+compares every output row before it reports a time):
+
+| shape (gate/up + down) | staging OFF | staging ON | delta |
+|---|---|---|---|
+| 16 experts × 1 token/group | 294.1 µs | **120.4 µs** | **2.44×** |
+| ... gate/up alone | 186.2 µs | 81.4 µs | 2.29× |
+| ... down alone | 110.4 µs | 42.6 µs | 2.59× |
+| 16 experts × 4 tokens/group | 385.4 µs | **171.7 µs** | **2.24×** |
+| 32 experts × 1 token/group | 562.6 µs | ~232 µs | ~2.4× |
+
+End to end — same image, same config, the only difference is `STRATA_TQ_STAGE` (`arm-tqstage0` vs `arm-tqstage1`):
+
+| | staging OFF | staging ON | delta |
+|---|---|---|---|
+| **TG chat** | 40.0 (27.4–53.8) | **50.5** (38.1–70.6) | **+26.3 %** |
+| **TG agent (~14.5 K depth)** | 39.7 (23.3–45.2) | **50.7** (24.4–72.7) | **+27.7 %** |
+| PP 4K | 254.7 | 246.6 | −3.2 % (inside the noise) |
+| PP 16K | 403.2 | 390.6 | −3.1 % (inside the noise) |
+
+and the probe (`bench/gfx906_probe.py`, 3126-token prompt, 128 decoded tokens, warm reps): TG 38.9 → **48.1 tok/s**
+(+24 %), PP 210.9 → 204.2 tok/s (inside the noise).
+
+PP is unaffected because a long prompt reaches the same experts at a different token-to-expert ratio: the prompt path
+uses the grouped kernels, which already had their tables staged (`kStageIqGrid`), not the per-token trellis ones.
+
+### Parity
+
+Bitwise identical: the codebook contents are the same 16-bit entries, only their address space changes. Verified with
+`native_expert_bench` (all modes, all shapes: "0 differing") and by the engine's own token output over the suite.
+
+---
+
+## 2. `0003-both-gfx906-rocblas-prompt-table.patch` — the prompt path's rocBLAS table exists on gfx906
+
+**The PP fix: 16K prompt +21 % (with `STRATA_HIP_PROMPT_F16=1` and the calibrated table).**
+
+### What changed
+
+`cmake/backends/hip.cmake` (the gfx906 toolchain macro) now looks for rocBLAS (`find_package(rocblas CONFIG QUIET)`) and
+sets `STRATA_ROCBLAS_AVAILABLE`; `cmake/strata_gpu_engine.cmake` opens the consumer gate from
+`if(STRATA_ENABLE_HIP AND STRATA_ROCBLAS_AVAILABLE)` to `if((STRATA_ENABLE_HIP OR STRATA_HIP_GFX906) AND …)`.
+
+### Why it is faster
+
+That gate compiles three things: the FP16-out rocBLAS GEMMs of the prompt path (`src/prefill/gemm.cu`, `Gemm::f16_inplace`),
+the `STRATA_ROCBLAS_TUNING` solution table that picks rocBLAS's kernel per shape, and the `tools/hip/tune_rocblas`
+target that makes such a table. On gfx906 the backend is `STRATA_HIP_GFX906=ON, STRATA_ENABLE_HIP=OFF`, so all three
+were compiled out: the prompt's 16-bit GEMMs fell back to the generic hipBLAS path with whatever kernel the library
+picks by itself, and no gfx906 table could even be produced.
+
+rocBLAS's own heuristic is demonstrably poor on this card: the tuner found a **better-than-default kernel for 167 of the
+210 shape/bucket rows** it measured, up to **5.0×** on one shape (`N=1 K=2560 T=8192`: 0.63 ms → 0.13 ms), and 2–3× on
+the wide projections the prompt spends its time in. So opening the gate hands the prompt path a table measured on the
+card instead of a library guess.
+
+### Numbers
+
+Same image, `STRATA_HIP_PROMPT_F16=1` in both arms; the only difference is whether the rocBLAS path and table exist:
+
+| | F16 only (no rocBLAS path, the bare fork) | + 0003 + table | delta |
+|---|---|---|---|
+| PP 4K | 229.7 (227.8–250.4) | **254.7** (245.5–264.5) | **+10.9 %** |
+| PP 16K | 370.5 (343.4–373.3) | **403.2** (394.5–408.1) | **+8.8 %** |
+| TG chat | 38.2 | 40.0 | inside the noise |
+| TG agent | 38.0 | 39.7 | inside the noise |
+
+Against the bare fork's PP at 16K (323.3) the pair `STRATA_HIP_PROMPT_F16=1` + this patch is **+24.7 %**. The engine
+confirms which path ran, in its own log:
+
+```
+prefill gemm: rocBLAS tuning enabled (210 rows, 167 with a solution, gfx906, rocBLAS 5.9.0.98737a5c)
+prefill gemm: rocBLAS solution -605552725 for T=1536 N=6144 K=2560 ldy=6144
+```
+
+### Parity
+
+The engine documents this path as *not* bitwise identical to the default (FP16 rounding of each 16-bit GEMM's output).
+R2 (token-identical, not bitwise) was approved for the prompt path; the suite's answers are unchanged in structure and
+the numbers move in the direction the kernels explain.
+
+### Notes
+
+- It is architecture-generic, not gfx906-specific: any HIP backend where rocBLAS ships device code gets the path and the
+  table, and a tree without rocBLAS keeps the old behaviour and says so at configure time.
+- The table is version-pinned to the rocBLAS build (`5.9.0.98737a5c` here). Moving `ROCM_VERSION` invalidates it; the
+  Dockerfile comment says how to re-calibrate (10–20 min on the card).
+
+---
+
+## 3. `0004-both-tune-rocblas-small-buckets-router-ldy.patch` — the tuner calibrates the shapes the engine asks for
+
+**A toolchain fix: without it, patch 0003's table is wrong for this workload.**
+
+### What changed
+
+`tools/hip/tune_rocblas.cpp`: the token buckets go from `256…8192` to **`1, 8, 16, 32, 64, 128, 256…8192`**, and the
+shape list gains the router's padded-**`ldy=96`** product (`{48, 2560, 96}`) with `ldy` defaulting to `N`.
+
+### Why it is faster
+
+Two measured mismatches between what the tool calibrated and what the engine asks for:
+
+1. **Small token counts.** `Table::closest()` picks the nearest bucket. The token counts a real prompt and verify window
+   ask for are mostly small — `STRATA_ROCBLAS_VERBOSE=1` on the serving engine showed `T = 69, 108, 745, 802, 1024,
+   2241, 7168`. With buckets from 256 up, every `T ≤ 128` ran the kernel tuned at `T=256`.
+2. **The router's `ldy`.** The engine calls the router product with a padded `ldy = 96`, so a row tuned at `ldy = N`
+   never matched it — the engine log said so verbatim: `no row for T=69 N=48 K=2560 ldy=96`.
+
+A row that does not match costs nothing but also gains nothing: the engine runs rocBLAS's default kernel for that shape.
+So this patch does not make a kernel faster, it makes the *table applicable* — which is why it is measured together with
+`0003` and the table (see the previous section: +10.9 % PP at 4K, +8.8 % at 16K), and why the honest attribution is
+"0003 + 0004 + the table = that gain".
+
+### Numbers
+
+The table itself is the measurement: 210 rows, **167 with a solution** better than rocBLAS's default by the tool's 5 %
+threshold, and the per-shape ceilings (from the table's own comments):
+
+| shape (N K, ldy = N) | default | best solution | gain |
+|---|---|---|---|
+| 10240 2560 @ T=256 | 3.09 ms | 1.64 ms | 1.88× |
+| 6144 2560 @ T=2048 | 6.64 ms | 3.65 ms | 1.82× |
+| 2560 6144 @ T=2048 | 7.29 ms | 4.52 ms | 1.61× |
+| 1 2560 @ T=8192 | 0.63 ms | 0.13 ms | 5.00× |
+
+### Parity
+
+Same table semantics (rows are `(type N K ldy T solution)`); the extra rows only ever match the shapes the engine really
+calls. The engine refuses a table whose architecture or rocBLAS version differs.
+
+---
+
+## 4. `optional/0006-both-gfx906-trellis-amd-layout-dispatch.patch` — the trellis types can take the wave64 layouts
+
+**Reviewed, not applied: it is a win only for a group of exactly one token, and a large loss for the windows a drafter
+produces.**
+
+### What changed
+
+`src/kernels/cuda/iq_kernels.cu`: the whitelists that route an expert format into `native_gu_amd_kernel` /
+`native_down_amd_kernel` (the AMD layouts selected by `STRATA_EXP_MODE=1|2|4`) now include the trellis types
+144/145/146, which they previously excluded — so a Gyro pack always got the CUDA 16-lane-row layout.
+
+### Why it might be faster
+
+The AMD layouts are shaped for this card: mode 1 puts **one whole 64-lane wave on one row** (a wave64 card's natural
+shape; a 16-lane row leaves three quarters of the wave without work), mode 2 (R2) computes **two rows per logical 32-lane
+warp** so two load chains are in flight, mode 4 four rows. All three also keep the row sums wave-local
+(`row_dot64/row_dot2/row_dotn`), which is the "wave64 cooperative GEMV" pattern of the gfx906 community work.
+
+### Numbers (`native_expert_bench`, layer 0, reference mode 0)
+
+| groups × tokens | mode 0 (CUDA rows) | mode 1 (64-lane row) | mode 2 (R2) | mode 4 |
+|---|---|---|---|---|
+| 8 × 1 | 159.4 µs | 163.9 µs — **and not bitwise** | **154.2 µs (+3.3 %)** | 157.5 µs (+1.2 %) |
+| 16 × 1 | 294.7 µs | — | **276.2 µs (+6.3 %)** | — |
+| 32 × 1 | 562.6 µs | — | **528.8 µs (+6.0 %)** | — |
+| 16 × 2 | 320.7 µs | — | 537.4 µs (**−68 %**) | 523.9 µs (**−63 %**) |
+| 16 × 4 | 385.4 µs | — | 1045.9 µs (**−171 %**) | — |
+
+### Why it is not a default
+
+`--spec 4` means the verify window presents **groups of 2–5 tokens**, which is exactly where these layouts collapse
+(the row-per-warp loop re-reads the activations once per row for every token in the group). It also does not stack with
+the real win: with the codebook staged (patch 0005) the CUDA layout is already at 120 µs for 16×1, far ahead of the
+138 µs the best AMD layout would give there. Kept in `optional/` because a box that decodes without a drafter, or a
+layer-split deployment where the group shapes differ, may still want to try it — `STRATA_EXP_MODE=2` after copying the
+patch in.
+
+### Parity
+
+Modes 2 and 4 are bitwise equal to mode 0 (the per-lane sums are unchanged, only which rows a warp owns). Mode 1 is not
+(different reduction order) — a second reason it stays out.
+
+---
+
+## 5. What the prompt number actually measures (important before reading any PP figure)
+
+Two rounds spent on this, and it changes how every PP number in this document may be used.
+
+**A long prompt reads the whole expert set, from the drive.** `Qwen3.8-Flash-Next-Gyro-M` has 512 experts × 48 layers
+and a top-10 router, so a prompt of 3 K tokens touches nearly every expert: the engine's own counter for one such
+request reads
+
+```
+strata serve: file tier I/O this request: the OS read 21001.2 MB from storage (83 major faults) for 25939.7 MB of
+expert reads; page cache held 24348.5 MB at the read, not 1591.1 MB
+```
+
+i.e. **26 GB of expert bytes and 21 GB of it from disk**, on a drive measured at 1.5 GB/s. That is ~14 s of the ~16 s
+the request takes: PP on a fresh prompt is **disk-bandwidth bound**, and no engine setting or kernel changes that.
+
+**Which is why a warm-cache PP number is not comparable to a cold-cache one.** The 0.2.1 install's 392 tok/s at "4K" is
+the same prompt run several times in a row with its expert set already in the page cache — the same log line reads
+`the OS read 1248.7 MB from storage for 34654.5 MB of expert reads`. The fork's suite numbers are fresh prompts every
+run. A model that fits the effect: time ≈ 7.7 s + 2.1 ms per 1 K tokens (fork, cold) against ≈ 0 + 2.6 ms per 1 K
+(warm 0.2.1) — the marginal token is the same, the difference is the 7.7 s of disk. So "PP 246 vs 392" is a
+cache-state difference, **not** an engine regression, and the honest PP claim for the changes in this document is the
+one measured inside one condition (bare fork vs patched fork): **+8.8 % at 16K, +10.9 % at 4K** (section 2).
+
+Two settings were tried against the disk bound, with the probe (3126-token fresh prompts, warm reps, 3 reps):
+
+| setting | PP | note |
+|---|---|---|
+| default (`--prefill auto`, 8 I/O threads, adaptive read-ahead) | 210.1 tok/s | the engine read 9.3 GB ahead for a 3 K-token prompt and used 83 of 387 blocks |
+| `STRATA_IO_PF_BUDGET_MB=256` (fixed read-ahead budget) | **222.6 tok/s** (+6 %) | fewer wasted speculative reads; the engine's own counters show the read-ahead was mostly unused |
+| `STRATA_IO_THREADS=128` on top of the above | 213.6 tok/s (no further gain) | the reads are bandwidth-bound, not IOPS-bound; 8 threads already saturate the drive |
+
+The read-ahead budget is therefore worth setting on a box whose page cache cannot hold the expert set (this one: 29 GiB
+of cache against a 90 GB file set), but it is a serving setting with a small, noisy effect - not a headline, and not
+something this branch changes as a default.
+
+## Rejected, with numbers (so nobody retries them)
+
+| idea | source | result |
+|---|---|---|
+| `STRATA_HIP_PROMPT_F16=1` on its own | this document, §2 | PP 4K 232.3 → 229.7 (nothing), PP 16K 323.3 → 370.5 (+14.6 %). A deep-prompt lever only, and only useful together with the rocBLAS table. |
+| `--ple-io mmap` instead of the default direct reads | the engine's own warning about slow random 4 KiB PLE reads | probe PP 229 → 198 tok/s (worse). The PLE tier is not the 4K bottleneck; the expert file tier is. |
+| `--prefill 8192` (chunk size) instead of `auto` (32768) | the 0.2.1 install plans 8192-token chunks | probe PP 229 → 229 (nothing). The chunk size is not the lever; the expert read volume is. |
+| **global address space for the trellis weight reads** (`__attribute__((address_space(1)))` on the bit-stream and scale loads, which the ISA showed going out as `flat_load_*` — the discussion's item 6) | the discussion's gfx906 memory-access item | `native_expert_bench`, staging on, bitwise equal: 16 × 1 token 120.4 → 117.2 µs (gu 81.4 → 77.0, 171 → 181 GB/s), 16 × 4 tokens 171.7 → 168.8 µs (inside the noise). **+2.8 % on a kernel shape that only occurs when nothing is drafted**, and nothing for the 2–5-token windows a `--spec 4` verify uses — so it was reverted rather than shipped as an unproven change to six load sites in the hottest kernel. Re-do it together with a drafter-free serving config if that ever matters. |
+| **`STRATA_HIP_SWIGLU_FUSED=1`** (gate/up + SwiGLU + q8_1 in one launch instead of three, "bitwise the same" per the kernel comment; the gfx906 default keeps the separate passes) | the engine's own gfx906 A/B note | full suite, same image and config: TG chat 50.5 → 52.0, TG agent 50.7 → 50.6, PP 4K 246.6 → 250.0, PP 16K 390.6 → 391.5 — every value inside the run-to-run band, agent decode dead level. Not kept: three launches per layer per token is not the cost here (the trellis expert kernels are), so the fusion has nothing to win. |
+| **occupancy / spills in the trellis expert kernels** (the discussion's items 1 and 4) | the discussion's register-pressure item | measured, nothing to fix: `native_gu_kernel<144>` is 43 VGPR with no spills (**5 waves/SIMD**), `native_down_kernel<144>` 40 VGPR (6 waves), the `mmvq_*_kernel<144…>` family 25–38 VGPR (6–9 waves). The trellis path is not register-limited on this card; the 64-lane/row experiments (§4) and the address-space test above were the remaining hypotheses for it. |
+| MMQ on gfx906 (`STRATA_MMQ_TAB`) | the discussion's item 8 | not re-tested here: the mi50-port measured it null on 0.2.1 (48/48 layers direct, sha1 unchanged, 2762 vs 2809 ms — inside the floor), and MMQ is not the prompt path in this build (rocBLAS is). |
+| "F32 low-bit expert kernels" (the discussion's dp4a item) | the discussion's item 5 | does not apply: the TQ decode is already integer `dp4a` on packed int8 (4 per lane), not F32. Confirmed in the source, and the staged-codebook win above shows the kernel was memory-bound, not ALU-bound. |
+
+---
+
+## Status of the discussion's nine items
+
+| item | status |
+|---|---|
+| 1 register pressure / spills | instrumented (`tools/hip/check_hip_spills.py`, the fork's own gate cannot read a HIP object). The trellis expert kernels turned out to be spill-free (43/40 VGPR, 5–6 waves); the real offenders are elsewhere: `block_topk_reg_kernel<66>` (406 spilled regs, 4 waves), `attend(...)` (256 VGPR + 195 spilled, **1 wave/SIMD**), `expdec_*` (opt-in, 96–187). Not yet fixed — next. |
+| 2 LDS bank conflicts | the codebook-in-LDS change (§1) is this family and is the biggest win; **bank-conflict counters themselves were not measured** — no rocprof in the image. |
+| 3 software pipelining | not tested. |
+| 4 occupancy / launch bounds | measured (waves column), not tuned. |
+| 5 native `v_dot4_i32_i8` | the premise does not hold for this pack (already integer dp4a); the 3-operand form (`i8_dot0`, gfx1030-32 only) is not exercised by the trellis path. |
+| 6 memory access / cache hints | not tested (ISA audit pending). |
+| 7 wave64-native shapes | tested and rejected as a default (§4). |
+| 8 tile size / MMQ_X | not applicable on this build. |
+| 9 profile first | partly: engine phase logs, expert/file-tier counters, ELF resource table, kernel micro-bench. No hardware counters (no profiler in the runtime image). |
