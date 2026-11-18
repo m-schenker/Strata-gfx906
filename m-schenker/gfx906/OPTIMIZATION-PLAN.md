@@ -294,6 +294,24 @@ Gyro-M's 144 routed-expert tensors are TQ2_T on both projections, and decode is 
 
 ---
 
+## 14b. Next queue (not part of this branch's scope; tracked in `NEXT-LEVERS.md`)
+
+The nine levers below came after this plan was executed. None is started; each has its own entry in `NEXT-LEVERS.md`
+(what, why, the published number, the file it touches, and how to prove it on this card).
+
+- [ ] **P11-1** `__mul24` instead of the quarter-rate `v_mul_lo_u32` in the quantised dot paths (PR #5033: −20…−27 % on the Q6_K head / Q4_K projection microbenches, identical hashes)
+- [ ] **P11-2** "Four lanes in one" MMVQ packing: one lane loads 16 B and carries four lanes' partials (same PR, same −20…−27 %, byte-identical)
+- [ ] **P11-3** Remove the double quantisation on hyper-connection reads (control-flow bug; part of the +24 % 2×MI50 decode result)
+- [ ] **P11-4** Router GEMV launch shape (issue/occupancy, not the `STRATA_HIP_ROUTER_FAST` switch — that one measured null here)
+- [ ] **P11-5** Expert-blob descriptor in the global address space, measured at the 2-5-token window (the T=1-only attempt in this branch gave +2.8 % and was reverted)
+- [ ] **P11-6** Software-pipelined residual GEMV (hipfire PR #158: +4.8 % decode on MI50, +17 VGPR, still 5 waves/SIMD)
+- [ ] **P11-7** DPP row-shuffle reductions instead of LDS/`ds_bpermute` (≈2× on the shuffle itself; ~21 % estimated for gfx906 MMVQ; not bit-identical, needs the width-16 caveat handled)
+- [ ] **P11-8** Wide LDS staging (`ds_read_b128`) in the kernels that still stage 32-bit (b32 ≈1.9-3.9 TB/s against b128 ≈9.5-11.2 TB/s; attention is already b128)
+- [ ] **P11-9** Wave64 GDN decode kernel (llama.cpp gfx906 proposal: ~5 %; needs a GDN model to measure, which this box does not have)
+- [ ] **P11-10** Revisit `v_dot8_i32_i4` when a 4-bit-activation path exists: measured +17…+83 % per kernel here (`IMPROVEMENTS.md` §6), blocked on activation precision and inapplicable to IQ/TQ codebook formats
+
+---
+
 ## 15. Honest expectation
 
 Ordered by expected value on *this* card and model, from the code as it stands:

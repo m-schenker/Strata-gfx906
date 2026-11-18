@@ -264,6 +264,63 @@ The read-ahead budget is therefore worth setting on a box whose page cache canno
 of cache against a 90 GB file set), but it is a serving setting with a small, noisy effect - not a headline, and not
 something this branch changes as a default.
 
+## 6. `v_dot8_i32_i4` (the 8-way 4-bit dot) — measured on this card, and why it is not in this branch
+
+Requested as "the single highest-leverage, not-yet-ported optimization". It was investigated properly; the verdict is
+**real instruction, real kernel speedup, not applicable to this engine's model or to IQ-style formats**, and here is the
+evidence.
+
+### The instruction exists and clang emits it for gfx906
+
+```
+$ clang++ -x hip --offload-arch=gfx906 -c probe.hip   # __builtin_amdgcn_sdot8(a, b, acc, false)
+$ llvm-objdump -d --mcpu=gfx906 probe.o | grep dot8
+	v_dot8_i32_i4 v2, v0, v1, v2
+	v_dot8_u32_u4 v2, v0, v1, v2
+```
+
+Notes that cost an hour to learn and are worth writing down: the builtin takes **four** arguments
+(`sdot8(a, b, c, clamp)`, the clamp is a bool), the operands are **two's-complement signed 4-bit** (not Q4_0's
+offset-binary `value = nibble - 8`, so a packer has to store the other encoding), and the hardware pairs **nibble j with
+nibble j** (verified with single-nibble patterns: a nibble j × b nibble k is non-zero only for k = j). A one-hot pattern
+test also shows all eight fields are used exactly once, so the pairing is the identity.
+
+### It halves the dot instructions and it is faster — measured
+
+`tools/hip/gfx906_dot8_bench.cpp` (shipped in this branch): the same 4-bit weight values in two encodings, the same
+weight bytes streamed by both arms, one 64-lane wave per row like the engine's decode GEMV, FP32 reference over the same
+data.
+
+| shape (640 rows × K 2560) | dp4a: 640 dots/row, q8_1 activations | dot8: 320 dots/row, 4-bit activations | throughput |
+|---|---|---|---|
+| 8 groups (6.6 MB of weights) | 0.0241 ms, 544 G MAC/s | 0.0199 ms, 659 G MAC/s | **+21.0 %** |
+| 16 groups (13.1 MB) | 0.0624 ms, 420 G MAC/s | 0.0341 ms, 768 G MAC/s | **+82.8 %** |
+| 32 groups (26.2 MB) | 0.0824 ms, 636 G MAC/s | 0.0702 ms, 747 G MAC/s | **+17.3 %** |
+
+So the ALU-issue thesis holds at the kernel level, strongest where the call still fits in cache (16 groups) and weaker
+once the weight stream is large enough to become the constraint (32 groups) - the same trade the discussion predicted.
+
+### Why it cannot land here
+
+1. **It needs both operands in 4-bit fields, so the activations must be quantised to 4 bits.** The engine's decode path
+   feeds `block_q8_1` activations to every expert GEMV. A dot8 path therefore needs a parallel 4-bit activation
+   quantiser and a second set of kernels, and it changes numerics: in the benchmark above the 4-bit activation arm
+   carries the block-scale quantisation error of a 4-bit activation (the run-to-run spread across shapes is 9.5-15.5 %
+   relative RMS against FP32 for both arms, dominated by the 4-bit weight/activation block scales on synthetic data). That
+   is a quality decision, not a speedup, and it is the model owner's call - exactly the kind of change this branch's rules
+   say must be measured end to end before it ships.
+2. **IQ-style formats cannot use it at all.** In IQ4_XS / IQ4_NL / the Gyro trellis formats the 4-bit (or 2-bit) field
+   is an **index into a codebook**, not the value. `dot8` would multiply index × index. This is what the engine actually
+   ships for low-bit experts, and it is what this box's model is (`TQ2_T`, a 2-bit trellis with an int8 codebook) - so
+   there is no model on this machine that could exercise a dot8 path, and no end-to-end number could be produced here.
+3. **Where it would apply** is the formats whose nibbles are values: Q4_0, Q4_1, Q4_K. That is a real, narrower target
+   (and the Q4_K dense/expert kernels could take it), but it needs a Q4 pack on a card like this one to measure, plus the
+   4-bit activation path from (1).
+
+Verdict: **not implemented** - not because the lever is imaginary (it measured +17-83 %), but because on this engine it
+requires a new activation precision and does not touch the formats the engine's low-bit experts use. The benchmark and
+the ISA notes are in the branch so the next person starts at the measurement, not at the question.
+
 ## Rejected, with numbers (so nobody retries them)
 
 | idea | source | result |
