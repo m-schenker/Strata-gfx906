@@ -18,7 +18,13 @@ And with all kept patches (this branch as it builds):
 
 | | TG chat | TG agent | PP 4K | PP 16K |
 |---|---|---|---|---|
-| R4 | **50.5** (38.1–70.6) | **50.7** (24.4–72.7) | 246.6 | 390.6 |
+| R4 (patches 0001-0005) | **50.5** (38.1–70.6) | **50.7** (24.4–72.7) | 246.6 | 390.6 |
+
+Round 2 added two more kept patches (`0007` wide codebook staging, `0008` global address space for the weight stream) and
+re-measured the flagship change with a decode probe rather than the full suite (`bench/gfx906_tg_probe.sh`, 6 reps each):
+**staging on 69.7 tok/s against 60.8 tok/s off (+14.6 %)**. The kernel-level effect of `0007` + `0008` is −4.9 % at 16×1
+(118.8 → 113.7 µs for gate/up + down), which is inside what a full suite round would call noise, so it is claimed at the
+kernel level only. §7 has every round-2 result and the keep/drop call for each.
 
 ---
 
@@ -291,11 +297,22 @@ test also shows all eight fields are used exactly once, so the pairing is the id
 weight bytes streamed by both arms, one 64-lane wave per row like the engine's decode GEMV, FP32 reference over the same
 data.
 
-| shape (640 rows × K 2560) | dp4a: 640 dots/row, q8_1 activations | dot8: 320 dots/row, 4-bit activations | throughput |
-|---|---|---|---|
-| 8 groups (6.6 MB of weights) | 0.0241 ms, 544 G MAC/s | 0.0199 ms, 659 G MAC/s | **+21.0 %** |
-| 16 groups (13.1 MB) | 0.0624 ms, 420 G MAC/s | 0.0341 ms, 768 G MAC/s | **+82.8 %** |
-| 32 groups (26.2 MB) | 0.0824 ms, 636 G MAC/s | 0.0702 ms, 747 G MAC/s | **+17.3 %** |
+First measured with a synthetic matrix; then rebuilt around **real Q4_0 rows out of a GGUF** and a **corrected dp4a
+baseline**. Both corrections matter and both were mistakes of this branch's own making: the Q4_0 arm needs the `-8` bias
+taken out the way a real kernel does it (`sum(n*a) - 8*sum(a)`, `patches`-level detail is in `DOT8-KIT.md`), and a plain
+per-byte `nibble - 8` BORROWS across bytes, which made the dp4a arm read 17-19 % "error" and run slow. With those fixed,
+`bench/gfx906_dot8_kit.sh --gguf` on the 248320 × 2560 `output.weight` of `mtp-Qwen3.8-Flash-Next-Q4_0.gguf`, card
+exclusive, median of three:
+
+| groups | dp4a (640 dots/row, q8_1) | dot8 (320 dots/row, 4-bit) | throughput | error dp4a | error dot8 |
+|---|---|---|---|---|---|
+| 8 (6.6 MB of weights) | 0.0320 ms, 409 G MAC/s | 0.0205 ms, 639 G MAC/s | **+55.4 %** | 0.51 % | 9.38 % |
+| 16 (13.1 MB) | 0.0869 ms, 819 G MAC/s | 0.0356 ms, 1000 G MAC/s | **+140.6 %** | 0.49 % | 8.93 % |
+| 32 (26.2 MB) | 0.1054 ms, 676 G MAC/s | 0.0708 ms, 1006 G MAC/s | **+48.7 %** | 0.52 % | 9.55 % |
+
+The error columns are relative RMS against an FP32 reference over the same weights and float activations, so they are the
+activation-precision cost: **0.5 % for the 8-bit path the engine ships, 9 % for the 4-bit activations dot8 needs.** That
+ratio, not the throughput, is what decides whether this can land.
 
 So the ALU-issue thesis holds at the kernel level, strongest where the call still fits in cache (16 groups) and weaker
 once the weight stream is large enough to become the constraint (32 groups) - the same trade the discussion predicted.

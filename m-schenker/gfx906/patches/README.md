@@ -24,7 +24,22 @@ patches/optional/**              ignored
 | `0003-both-gfx906-rocblas-prompt-table.patch` | both | makes the prompt path's FP16-out rocBLAS GEMMs and the `STRATA_ROCBLAS_TUNING` solution table exist on gfx906: the rocBLAS package is looked for in the gfx906 toolchain and the `STRATA_ENABLE_HIP`-only gate that compiles the path and the tuner is opened for `STRATA_HIP_GFX906`. Without it a gfx906 build has no rocBLAS prompt path at all (4K prompt 232 vs 392 tok/s against the same card's 0.2.1 install), and `tune_rocblas` is not even a target. |
 | `0004-both-tune-rocblas-small-buckets-router-ldy.patch` | both | the tuner calibrates the token buckets a real prompt asks for (1…128, not just 256+) and the router's padded `ldy=96` shape, which otherwise never matches a row. Architecture-generic; changes which rows a table has, not what a row means. |
 | `0005-both-gfx906-trellis-lds-codebook-default.patch` | both | the trellis expert kernels (144/145/146) copy their 4 KB int8 codebook into shared memory on gfx906 by default instead of re-reading it from global memory: `native_expert_bench`, 16 experts, gate/up + down 294 → 120 µs at 1 token and 385 → 172 µs at 4 tokens (bitwise equal), and **+24 % decode end to end** (38.9 → 48.1 tok/s at 3.1 K prompt depth). `STRATA_TQ_STAGE=0` is the way back; the wave32 HIP backend is untouched. |
+| `0007-both-gfx906-trellis-codebook-wide-stage.patch` | both | the trellis codebook's LDS staging copy is `uint4` a thread (256 accesses) instead of `uint32` (1024). Bitwise (it is a copy), and 9 of the branch's 10 `native_expert_bench` runs are faster by 4-7 µs at 8x1/16x1/16x2/16x4/32x1 (IMPROVEMENTS §7). |
+| `0008-both-gfx906-trellis-global-address-space.patch` | both | the three trellis weight-read sites (u16 stream, u8 state byte, f16 scale) are qualified address space 1, so clang emits `global_load_*` instead of `flat_load_*`: 5 flat loads become 12 global loads plus one. Flat loads share `lgkmcnt` with the LDS codebook lookups, so this decouples the two waits. Bitwise; -2.0 to -2.5 % at 8x1/16x1 and -2.0 % on the 16x4 verify window (IMPROVEMENTS §7). |
 | `0002-ds41-vendored-engine-cmake.patch` | both | the build wiring for the vendored DeepSeek engine: `CMakeLists.txt` calls `cmake/strata_dsv41.cmake` once the gfx906 backend has set up `CUDA::cudart`, `CUDA::cublas` and `strata_prefill`; `cmake/strata_ggml.cmake` builds ggml-cpu with BMI2 OFF when `STRATA_BUILD_DSV41` is on, as upstream's own dsv41 block did. |
+
+## What is reviewed and *not* applied (`patches/optional/`)
+
+Each of these carries its measurement in the file header; the summary is `IMPROVEMENTS.md` §7 and `NEXT-LEVERS.md`.
+
+| Patch | Measured | Call |
+| --- | --- | --- |
+| `0006-both-gfx906-trellis-amd-layout-dispatch.patch` | mode 1/2/4 row layouts: +3-6 % at 1 token a group, **-63 to -171 %** at 2-5 tokens (the groups `--spec 4` actually produces); mode 1 not bitwise | not applied |
+| `0007-qwen-gfx906-attn-query-swizzle-default.patch` | a prompt-path arm that measured inside the noise | not applied |
+| `0008-both-gfx906-mul24-address-math.patch` | `__mul24` in the trellis address arithmetic: bitwise, ±2 % both ways over five shapes (the kernel is memory-bound, not integer-pipe-bound) | not applied |
+| `0009-both-gfx906-dpp-warp-sum.patch` | 4 of 5 `ds_bpermute` replaced by DPP: the ISA change works, but gfx906 needs **two instruction slots** between a DPP and its consumer, and parity fails in the real kernel even with them | not applied |
+| `0010-both-mmvq-software-pipeline.patch` | weight prefetch in `native_mmvq_multi_kernel`: Q6_K +0.3 %, Q8_0 -2.0 %, Q4_0 -3.6 % | not applied |
+| `0011-both-hyperconnection-double-quantize.patch` | the caller's second quantise skipped: 50.8 tok/s against 67.4 tok/s without it (same tree, `STRATA_GR_SPLIT=1`, both correct) | not applied |
 
 The gfx906 backend itself is part of the tree: `CMakeLists.txt` builds the CUDA targets through
 `include/strata/platform/hip_compat/` when `-DSTRATA_HIP_GFX906=ON`, and `docs/AMD_HIP.md` documents the gfx906 switches.

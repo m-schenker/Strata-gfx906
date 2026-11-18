@@ -299,16 +299,16 @@ Gyro-M's 144 routed-expert tensors are TQ2_T on both projections, and decode is 
 The nine levers below came after this plan was executed. None is started; each has its own entry in `NEXT-LEVERS.md`
 (what, why, the published number, the file it touches, and how to prove it on this card).
 
-- [ ] **P11-1** `__mul24` instead of the quarter-rate `v_mul_lo_u32` in the quantised dot paths (PR #5033: −20…−27 % on the Q6_K head / Q4_K projection microbenches, identical hashes)
-- [ ] **P11-2** "Four lanes in one" MMVQ packing: one lane loads 16 B and carries four lanes' partials (same PR, same −20…−27 %, byte-identical)
-- [ ] **P11-3** Remove the double quantisation on hyper-connection reads (control-flow bug; part of the +24 % 2×MI50 decode result)
-- [ ] **P11-4** Router GEMV launch shape (issue/occupancy, not the `STRATA_HIP_ROUTER_FAST` switch — that one measured null here)
-- [ ] **P11-5** Expert-blob descriptor in the global address space, measured at the 2-5-token window (the T=1-only attempt in this branch gave +2.8 % and was reverted)
-- [ ] **P11-6** Software-pipelined residual GEMV (hipfire PR #158: +4.8 % decode on MI50, +17 VGPR, still 5 waves/SIMD)
-- [ ] **P11-7** DPP row-shuffle reductions instead of LDS/`ds_bpermute` (≈2× on the shuffle itself; ~21 % estimated for gfx906 MMVQ; not bit-identical, needs the width-16 caveat handled)
-- [ ] **P11-8** Wide LDS staging (`ds_read_b128`) in the kernels that still stage 32-bit (b32 ≈1.9-3.9 TB/s against b128 ≈9.5-11.2 TB/s; attention is already b128)
-- [ ] **P11-9** Wave64 GDN decode kernel (llama.cpp gfx906 proposal: ~5 %; needs a GDN model to measure, which this box does not have)
-- [ ] **P11-10** Revisit `v_dot8_i32_i4` when a 4-bit-activation path exists: measured +17…+83 % per kernel here (`IMPROVEMENTS.md` §6), blocked on activation precision and inapplicable to IQ/TQ codebook formats
+- [x] **P11-1** `__mul24` in the trellis decode address arithmetic — **measured, noise**: bitwise, 8x1 79.5→75.6 · 16x1 118.8→121.4 · 16x2 137.8→135.4 · 16x4 174.4→173.9 · 32x1 207.4→214.2 µs (signs both ways). The ISA does change (`v_mul_i32_i24_e32`); the kernel is memory-bound. `patches/optional/0008`
+- [ ] **P11-2** four-lanes-in-one packing — **blocked on hardware**: the pattern (four 4-byte weight reads a lane) exists in this tree only in `tqp_states8`, and all 96 expert entries on this box are `TQ2_T` (type 144), whose reads are two uint16 + one uint8, already coalesced; the dense `native_mmvq` path is weight-bandwidth-bound (346-620 GB/s measured)
+- [x] **P11-3** hyper-connection double quantisation — **measured, no gain**: two engine builds, both correct output, `STRATA_GR_SPLIT=1`: 67.4 tok/s without skipping the caller's pass, 50.8 with it. `patches/optional/0011`
+- [x] **P11-4** router — **measured hard, no change shipped**: 15.4-16.9 µs a call (~1.5 ms a token at 96 calls, launch overhead 1.3 µs); one-warp, 64-lane, per-lane-sort and sort+merge rewrites all ≥ baseline. The cost is a 100-deep dependent `ds_bpermute` chain (115 shuffles, 2,445 static instructions). `tools/hip/gfx906_router_lab.cpp`
+- [x] **P11-5** trellis weight stream in the global address space — **shipped**: ISA 5 × flat_load → 12 × global_load + 1; bitwise, −2.0 % at 8x1, −2.5 % at 16x1, 0 at 16x2, −2.0 % at 16x4, 0 at 32x1. `patches/0008`
+- [x] **P11-6** software-pipelined weight prefetch in `native_mmvq_multi_kernel` — **measured, regression**: Q6_K +0.3 %, Q8_0 −2.0 %, Q4_0 −3.6 % (`tools/hip/gfx906_dense_bench.cpp`). `patches/optional/0010`
+- [x] **P11-7** DPP reductions — **measured, not shipped**: the ISA change works, but gfx906 needs **two instruction slots** between a DPP and its consumer, and parity fails in the real kernel even with them. `patches/optional/0009`
+- [x] **P11-8** wide staging of the trellis codebook (`uint4`, 1024 → 256 accesses) — **shipped**: bitwise, 9 of 10 runs faster by 4-7 µs. `patches/0007`
+- [ ] **P11-9** wave64 GDN decode — **blocked on hardware**: Gyro-M has no Gated Delta Net layers, so there is nothing to benchmark; the kernels and `bench/gdn_chunk_bench.cpp` are in the tree for a box with a GDN model
+- [x] **P11-10** `v_dot8_i32_i4` — **measured and handed off**: real Q4_0 rows give +56…+141 % a kernel, with 4-bit activations costing 8.9-9.6 % relative RMS against 0.5 %; not in this branch (numerics; IQ/TQ nibbles are indices). `bench/gfx906_dot8_kit.sh` + `DOT8-KIT.md` for the bigger box
 
 ---
 

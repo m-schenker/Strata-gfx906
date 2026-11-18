@@ -12,6 +12,8 @@ one Instinct MI50 32 GB, clocks pinned, nothing else on the card. Result folders
 | 0004 | the tuner calibrates the buckets a real prompt asks for (1…128) and the router's padded `ldy=96` shape | `patches/0004-both-tune-rocblas-small-buckets-router-ldy.patch` |
 | — | `tools/hip/gfx906-rocblas-5.9.0.txt`: the table measured on this card against this image's rocBLAS (210 rows, 167 with a better-than-default solution, up to 5.0× on a shape) | `added-source-files/tools/hip/`, copied into the image |
 | 0005 | the **trellis expert kernels stage their int8 codebook in LDS by default on gfx906** (`tq_stage_on()` returned false for every HIP build) | `patches/0005-both-gfx906-trellis-lds-codebook-default.patch` |
+| 0007 | the codebook's staging copy moves 16 bytes a thread instead of 4 (256 accesses instead of 1024) | `patches/0007-both-gfx906-trellis-codebook-wide-stage.patch` |
+| 0008 | the trellis weight stream is read through the **global address space**, so its waits use `vmcnt` and stop sharing `lgkmcnt` with the LDS codebook lookups | `patches/0008-both-gfx906-trellis-global-address-space.patch` |
 
 ## Headline (full suite, medians)
 
@@ -37,7 +39,7 @@ Two caveats, both stated because they change how the numbers may be used:
   on the same image with one variable, and the probe (below) reproduces the delta independently, so the +26 % is real;
   but no single decode sample should be quoted to a tenth.
 
-## The trellis decode win (patch 0005), measured three ways
+## The trellis decode win (patch 0005), measured four ways
 
 `native_expert_bench` against the real Gyro-M GGUF, layer 0, reference mode 0, **bitwise equal** in every configuration
 ("0 differing"): the benchmark hashes every output row and only then reports times, so this is not a "looks right".
@@ -55,11 +57,44 @@ Probe (3126-token prompt, 128 decoded tokens, 3 reps, warm reps only): decode 38
 Full suite (`arm-tqstage0` vs `arm-tqstage1`, same image, same config, only `STRATA_TQ_STAGE`): decode 40.0 → **50.5**,
 agent decode 39.7 → **50.7**, prompts −3 % (inside the noise).
 
+And at the end of round 2, with `bench/gfx906_tg_probe.sh` (six reps a side, two warm requests per rep that differ only in
+`max_tokens`, so no time-to-first-token subtraction can invert the difference): **staging ON 69.7 tok/s, OFF 60.8 tok/s,
++14.6 %**. An earlier three-rep pair of the same comparison read 77.9 against 51.5 (+51 %); that was noise, and this
+figure supersedes it — the same order as the suite's +26 %, not larger.
+
 Why it is this large: without staging, each wave re-reads the 4 KB `tq_lut_i8` codebook from global memory for every
 distinct line it needs — on a wave64 card with 64 KiB of LDS and no matrix cores that read, not the dot products, is the
 kernel (75 GB/s effective became 171 GB/s). Upstream enabled this staging for cc < 6.1 and for the sm_86 default and
 never for HIP; the environment switch (`STRATA_TQ_STAGE=1`) was already reachable, so this patch only makes it the
 default where it was measured, and `=0` is the way back.
+
+## Round 2 — the follow-up list, one arm each
+
+The nine levers of the second discussion document, each implemented and then measured on its own. Instruments used:
+`bench/gfx906_build.sh` (sync + re-apply the branch's patches + rebuild — `/src` in the container is a *copy*, and
+measuring a stale build is indistinguishable from measuring a null change), `bench/gfx906_kernel_bench.sh`
+(`native_expert_bench`, five shapes, median of three, parity verdict), `tools/hip/gfx906_dense_bench.cpp` (the engine's own
+`native_mmvq` and `native_router_top10` launchers), `tools/hip/gfx906_router_lab.cpp` (four router rewrites),
+`bench/gfx906_tg_probe.sh` (decode rate from two warm requests that differ only in `max_tokens`).
+
+| # | lever | result | call |
+|---|---|---|---|
+| 1 | `__mul24` in the trellis address arithmetic | bitwise; 8x1 75.6, 16x1 121.4, 16x2 135.4, 16x4 173.9, 32x1 214.2 µs against 79.5 / 118.8 / 137.8 / 174.4 / 207.4 — signs both ways | **dropped** (`optional/0008`) |
+| 2 | four-lanes-in-one packing | not measurable: no `TQP` pack on this box (all 96 entries are `TQ2_T`), and `TQ2_T`'s reads are already coalesced; dense path is weight-bound at 346-620 GB/s | **blocked** |
+| 3 | hyper-connection double quantisation | two engine builds, correct output in both, `STRATA_GR_SPLIT=1`: 67.4 tok/s without skipping the caller's pass, 50.8 with it | **dropped** (`optional/0011`) |
+| 4 | router launch shape | engine router 15.4-16.9 µs a call (~1.5 ms a token), launch overhead 1.3 µs; variants: one warp 14.5-18.1, 64-lane 14.8-19.1, per-lane sort 92.5, sort+merge 32.4 µs | **no change shipped** (the chain is the cost) |
+| 5 | trellis reads in the global address space | ISA 5 × `flat_load` → 12 × `global_load` + 1; bitwise, −2.0 % at 8x1, −2.5 % at 16x1, 0 at 16x2, −2.0 % at 16x4, 0 at 32x1 | **kept** (`0008`) |
+| 6 | software-pipelined prefetch in `native_mmvq_multi_kernel` | Q6_K +0.3 %, Q8_0 −2.0 %, Q4_0 −3.6 % | **dropped** (`optional/0010`) |
+| 7 | DPP reductions for the 32-lane butterfly | ISA right (4 DPP + 1 shuffle), but **two slots of distance are required between dependent DPPs** and parity still fails in-kernel | **dropped** (`optional/0009`) |
+| 8 | wide staging of the trellis codebook | `uint4` instead of `uint32`: 256 accesses instead of 1024; bitwise, 9 of 10 runs faster by 4-7 µs | **kept** (`0007`) |
+| 9 | wave64 GDN decode | not measurable: Gyro-M has no GDN layers | **blocked** |
+| — | `v_dot8_i32_i4` | real Q4_0 rows, corrected dp4a baseline: +55.4 % / +140.6 % / +48.7 % at 8/16/32 groups; 4-bit activations cost 8.9-9.6 % relative RMS against 0.5 % | **handed off** (`DOT8-KIT.md`) |
+| — | codebook staging end to end | 6 reps a side: **69.7 tok/s on, 60.8 off (+14.6 %)**; a 3-rep pair that read 77.9 against 51.5 was noise | **kept, re-quantified** |
+
+Two process findings from this round, both now tooled: the image's build tree compiles `/src`, a **copy** of the checkout
+(editing the checkout changes nothing until synced, and the sync wipes the applied patches), and a stale `/src` holding the
+failed DPP variant made a freshly built engine serve 1-3 tokens — which is what first made patches 0003-0005 look guilty
+when the real culprit was the stale tree.
 
 ## Measured, rejected (kept so the next person does not retry them)
 
