@@ -1,0 +1,80 @@
+# backend: both (kernels shared; the change only fires in a gfx906 build).
+#
+# NOT SHIPPED - kept as the record of a measurement that came out null.
+#
+# `__mul24` (v_mul_u32_u24, full rate on gfx906) instead of a plain 32-bit multiply (v_mul_lo_u32, quarter rate) in the
+# trellis decode's ADDRESS arithmetic: the block pointer of tq_load / tq_load_tqp and the q8_1 block pointer of
+# tq_apply, where every stride fits in 24 bits.  The sums are untouched, so the results are bitwise identical by
+# construction (native_expert_bench: 0 differing on every shape).
+#
+# Measured on one MI50 32 GB, `native_expert_bench` against the real Gyro-M GGUF, layer 0, reference mode 0, median of
+# three, card exclusive, against the same build without the patch:
+#
+#   groups x tokens   without          with             delta
+#    8 x 1            79.5 us          75.6 us          -4.9 %
+#   16 x 1           118.8 us         121.4 us          +2.2 %
+#   16 x 2           137.8 us         135.4 us          -1.7 %
+#   16 x 4           174.4 us         173.9 us          -0.3 %
+#   32 x 1           207.4 us         214.2 us          +3.3 %
+#
+# Signs both ways, no shape outside the +/-2 % noise band in a repeatable direction: this kernel is memory-bound (the
+# gate/up rows run at ~170 GB/s against the card's ~1 TB/s, limited by the 8-32 groups a decode step presents), so taking
+# slots out of the integer pipe does not move it.  Same conclusion as the DPP reduction (optional/0007).  The ISA does
+# change as intended - `v_mul_i32_i24_e32` where a plain multiply was - which is why this is worth recording: the lever is
+# real on this card but this kernel does not pay for it.
+#
+diff --git a/src/kernels/cuda/iq_kernels.cu b/src/kernels/cuda/iq_kernels.cu
+index d329558..ef0502c 100644
+--- a/src/kernels/cuda/iq_kernels.cu
++++ b/src/kernels/cuda/iq_kernels.cu
+@@ -623,6 +623,23 @@ __device__ __forceinline__ float vec_dot_nvfp4_q8_1(const void* __restrict__ vbq
+ template<int TY> struct TqInfo;
+ template<> struct TqInfo<144> { using block_t = block_tq2_t; };   // byte-aligned, no K
+ template<> struct TqInfo<145> { using block_t = block_tqk6; static constexpr int K = 6; };
++// gfx906: `v_mul_lo_u32` is quarter rate and `v_mul_u32_u24` is not (ISA, checked with a probe: `__mul24` gives
++// v_mul_i32_i24_e32, a plain 32-bit multiply gives v_mul_lo_u32), and every stride in these kernels fits comfortably in
++// 24 bits - the largest is a row of an expert blob (1.3 MB/entry over 640+ rows, i.e. ~340 bytes a row times a row
++// index below 2000).  Applying it to the *address* arithmetic leaves every sum untouched, so the results are bitwise
++// the same by construction; what changes is that the compiler no longer has to widen a 32x32 product to 64 bits
++// (v_mad_u64_u32, three slots) for an offset that is known to fit.
++__device__ __forceinline__ int strata_mul24(int a, int b) {
++#if defined(__HIPCC__) && defined(__gfx906__)
++    return __mul24(a, b);
++#else
++    return a * b;
++#endif
++}
++__device__ __forceinline__ const uint8_t* strata_iptr(const void* base, int i, int stride) {
++    return (const uint8_t*) base + strata_mul24(i, stride);
++}
++
+ template<> struct TqInfo<146> { using block_t = block_tqk7; static constexpr int K = 7; };
+ // Gyro-L: pair trellis (64 steps x K bits, 2 weights per step), the TQ2_T codebook's first pair
+ template<> struct TqInfo<147> { using block_t = block_tqp5; static constexpr int K = 5; };
+@@ -700,7 +717,7 @@ struct TqLane { int q[4]; float d; };
+ // instead of the global table.  The same 16-bit entries, so the same weights.
+ template<int TY, bool STAGED = false>
+ __device__ __forceinline__ TqLane tq_load(const void* __restrict__ vbq, int kbx, int iqs, const uint16_t* __restrict__ s_lut = nullptr) {
+-    const auto* b = (const typename TqInfo<TY>::block_t*) vbq + kbx;
++    const auto* b = (const typename TqInfo<TY>::block_t*) strata_iptr(vbq, kbx, (int) sizeof(typename TqInfo<TY>::block_t));
+     uint32_t s[4];
+     tq_states4<TY>(b->qs, iqs / 4, s);
+     TqLane r;
+@@ -715,7 +732,7 @@ __device__ __forceinline__ TqLane tq_load(const void* __restrict__ vbq, int kbx,
+ }
+ __device__ __forceinline__ float tq_apply(const TqLane& r, const block_q8_1* __restrict__ bq8_1, int iqs) {
+     const int l = iqs / 4;
+-    const block_q8_1* b8 = bq8_1 + l / 2;
++    const block_q8_1* b8 = (const block_q8_1*) strata_iptr(bq8_1, l / 2, (int) sizeof(block_q8_1));
+     const int* q8 = (const int*) b8->qs + 4 * (l & 1);
+     int sumi = 0;
+ #pragma unroll
+@@ -774,7 +791,7 @@ __device__ __forceinline__ void tqp_states8_cheap(const uint8_t* __restrict__ qs
+ }
+ template<int TY>
+ __device__ __forceinline__ TqLane tq_load_tqp(const void* __restrict__ vbq, int kbx, int iqs) {
+-    const auto* b = (const typename TqInfo<TY>::block_t*) vbq + kbx;
++    const auto* b = (const typename TqInfo<TY>::block_t*) strata_iptr(vbq, kbx, (int) sizeof(typename TqInfo<TY>::block_t));
+     uint32_t s[8];
+     tqp_states8<TY>(b->qs, iqs / 4, s);
+     TqLane r;

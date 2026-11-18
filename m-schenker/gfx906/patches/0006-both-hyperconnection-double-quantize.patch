@@ -1,0 +1,39 @@
+# backend: both (the hyper-connection read is shared; nothing here is gfx906-specific).
+#
+# Remove a redundant activation quantisation on the hyper-connection read's K-split path.
+#
+# fused_gr_read_multi() returns whether it left the q8_1 image of `mixed` behind; when it did not, the caller runs
+# native_quantize_q8_1 over the whole of `mixed` itself (mtp.cpp, verify.cpp, layer.cpp each do `if (!q8) quantize`).
+# The gfx906 STRATA_GR_SPLIT=1 path launched gr_up_fast_kernel / gr_up_multi_kernel - both of which END with
+# `if (m.a[0].q8_mixed != nullptr) gr_q8_tail(m, d0)`, i.e. they do write that image - and then returned `false`
+# unconditionally.  So the activation was quantised in the up kernel and again by the caller: an extra pass over
+# N*T values (2560 x T floats) per hyper-connection read, on the exact vector the next GEMV consumes.
+#
+# Not a numerics change: the second quantisation wrote the same values over the first (same input, same quantiser,
+# same destination).  It is `false` only when no image was asked for, which is what `q8` already says; the v3 path
+# above is a different case and keeps its `false` (gr_up_v3_kernel has no tail).
+#
+# Measured: the launch it removes is ~2-3 us against a ~400 us layer on this card (48 layers, one read each for
+# attention and MLP), and the path is opt-in (`STRATA_GR_SPLIT=1`), so it is shipped as work removal rather than as a
+# throughput claim; the end-to-end A/B needs a serving round with the split path on, which the shipped config does not
+# use.  Parity: the split path's own sums are unchanged by this patch (verified with native_expert_bench's bitwise
+# compare for the default path, which this patch does not touch).
+
+diff --git a/src/kernels/cuda/fused_gr.cu b/src/kernels/cuda/fused_gr.cu
+index 1c3d4df..1cf41ea 100644
+--- a/src/kernels/cuda/fused_gr.cu
++++ b/src/kernels/cuda/fused_gr.cu
+@@ -2981,7 +2981,12 @@ static bool fused_gr_read_multi_slice(const FusedGrArgs* a, int n_tok, float* xn
+             std::fprintf(stderr, "fused_gr_read_multi: %s\n", cudaGetErrorString(e));
+             std::exit(1);
+         }
+-        return false;   // the gfx906 STRATA_GR_SPLIT read: no q8_1 (the caller quantizes), like the v3 path above
++        // Both up kernels of this path write the q8_1 image themselves (gr_up_fast_kernel and gr_up_multi_kernel end
++        // in `if (m.a[0].q8_mixed != nullptr) gr_q8_tail(m, d0)`), so reporting "no image" here made the caller run
++        // native_quantize_q8_1 over mixed_ a second time - a whole extra pass over N*T values per hyper-connection
++        // read, on the activations the next GEMV consumes.  It is `false` only when no image was asked for, which is
++        // what `q8` already says; the v3 path above is a different case (gr_up_v3_kernel has no tail).
++        return q8;
+     }
+ #endif
+     // the default read (STRATA_GR_V3 unset): v1, or the bitwise-equal v2 / v3 this card's check accepted

@@ -321,6 +321,42 @@ Verdict: **not implemented** - not because the lever is imaginary (it measured +
 requires a new activation precision and does not touch the formats the engine's low-bit experts use. The benchmark and
 the ISA notes are in the branch so the next person starts at the measurement, not at the question.
 
+## 7. The instruction-count levers, measured (the "MI50 is issue-poor" list)
+
+The queue in `NEXT-LEVERS.md` was worked through after the first pass. Only one of the nine shipped, and the reason is
+worth stating before the table: **after the codebook staging this branch already took the memory side of the trellis
+expert kernels, and what is left in them is memory-bound, not issue-bound** (gate/up rows run at ~170 GB/s on 8-32 groups
+of one to four tokens; the card's HBM is ~1 TB/s, and the limit is how many experts a decode step presents). So levers
+that remove instructions from the *ALU* pipe move these kernels by noise, and the levers that remain interesting are the
+ones that remove *work* (a redundant launch) or change the *shape* (a wave64 kernel), not the ones that shave slots.
+
+Instrument used for all of it (added in this branch): `tools/hip/gfx906_isa_count.py`, a per-kernel opcode histogram out
+of the gfx906 code objects of a build tree (`--kernel`, `--opcode`, `--dump`), the SASS-level companion to
+`check_hip_spills.py`. It is how "this kernel is 5 x ds_bpermute" or "`__mul24` really is a different instruction" was
+checked without a profiler.
+
+| lever | what was done | result on this box | shipped |
+|---|---|---|---|
+| **`__mul24` for the integer multiplies** (`NEXT-LEVERS` §1) | `__mul24` (v_mul_u32_u24, full rate) in the trellis decode's address arithmetic — `tq_load`/`tq_load_tqp` block pointer, `tq_apply` q8_1 pointer — where every stride fits in 24 bits, so the sums are untouched (bitwise equal) | bitwise, and **noise**: 8 x 1 79.5 -> 75.6 us, 16 x 1 118.8 -> 121.4, 16 x 2 137.8 -> 135.4, 16 x 4 174.4 -> 173.9, 32 x 1 207.4 -> 214.2. Signs both ways, nothing repeatable outside ±2 % | no — `patches/optional/0008` |
+| **DPP row-shuffle reductions** (`§7`) | 4 of the 5 `ds_bpermute_b32` of `warp_sum` become `v_mov_b32_dpp row_ror:8/4/2/1`; the 16-crossing stays a shuffle (DPP rows are 16 lanes). ISA confirmed: 5 bpermutes -> 1 bpermute + 4 DPP | **Two hardware findings, one blocker.** (a) gfx906 needs **two instruction slots** between a DPP and the instruction that reads its result: with 0 or 1 gaps a 16-lane butterfly returns 19.0 for a sum of 76.0, with 2 or 4 gaps it returns 76.0 — a DPP reduction that looks right on paper reads stale registers here, which is very likely why this lever never shipped in the gfx906 forks. (b) Even with the gaps, parity fails in the real kernel ("NOT BITWISE"), and 8 x 1 measured 75.6-77.8 us against 79.5 — maybe a few percent, unproven and not bitwise | no — `patches/optional/0009` |
+| **Hyper-connection double quantisation** (`§3`) | `fused_gr_read_multi`'s gfx906 `STRATA_GR_SPLIT=1` path returned "no q8_1 image" although both up kernels it launches end in `if (m.a[0].q8_mixed != nullptr) gr_q8_tail(...)` — so the caller ran `native_quantize_q8_1` over all of `mixed` a second time | one kernel launch per hyper-connection read removed, `N*T` values. Numerically a no-op (the second pass wrote the same bytes). **Not measured end to end: the path is opt-in and the launch is ~2-3 us against a ~400 us layer** | **yes** — `patches/0006` |
+| **Router launch shape** (`§4`) | read the code: `route<<<1, dim3(32, 8)>>>` with `if (threadIdx.y != 0) return;` — 8 warps launched, 7 exit immediately, and the top-10 selection runs 10 sequential ranks x (5-shuffle reduce + compare). `STRATA_HIP_ROUTER_FAST=1` already measured null in the first pass | the shape is *deliberate* (the comment pins the geometry) and the only real lever left is a different selection topology, which changes the tie-break order and therefore is not bitwise. 512 logits + 10 ranks is a few microseconds against a ~400 us layer, so a rewrite is not justified by the measurements; the "launch-shape stall" in the upstream investigation is not reproducible as a win here | no |
+| **Blob pointer in the global address space** (`§5`) | re-read the earlier attempt (T=1 only, +2.8 %, reverted) against the published "+24 % on 2x MI50" | the difference has to be *where* the pointer is cast: this branch cast the per-row read sites; the claim is about a layer's blob descriptor being reloaded per call. Not retried in this pass — it needs the descriptor load targeted and the 2-5-token window measured, and the window is where the trellis kernels are already at 72-113 GB/s | no |
+| **Software-pipelined residual GEMV** (`§6`) | not applied: after staging, the trellis expert kernels are spill-free at 5-6 waves (`tools/hip/check_hip_spills.py`), and the dense GEMV path this would target is not the Gyro-M decode path | left in the queue with its published number (+4.8 % on MI50 in hipfire, one of four kernels kept the gain). It needs a kernel whose stall profile is known, i.e. the profiler this image does not have | no |
+| **Wide LDS staging** (`§8`) | measured where it could apply: the attention kernel is already 1872 x `ds_read_b128` against 44 x `ds_read_b32`; the trellis codebook staging is one 32-bit pass of 1024 words per block, paid once per block | the staging pass is 4 iterations of 256 threads per block against ~80 dot calls per row: not a measurable share | no |
+| **Wave64 GDN decode** (`§9`) | not applicable to this model: Gyro-M has no Gated Delta Net layers, so there is nothing to measure end to end on this box | the kernel-level harness exists (`bench/gdn_chunk_bench.cpp`); a GDN model is needed for the number that matters | no |
+| **`v_dot8_i32_i4`** (`§6` above, and `DOT8-KIT.md`) | rebuilt as a portable kit with real Q4_0 rows out of a GGUF, and the dp4a baseline corrected to Q4_0's per-block bias trick, so the comparison is instruction-for-instruction | **real Q4_0 weights** (248320 x 2560 `output.weight` of the MTP drafter), card exclusive, median of 3: dp4a 0.0320/0.0869/0.1054 ms against dot8 0.0205/0.0356/0.0708 ms at 8/16/32 groups — **+55 %, +141 %, +49 %**. Accuracy: 0.5 % relative RMS for the 8-bit arm, 8.9-9.6 % for the 4-bit one. Still blocked on the same two things (4-bit activations; IQ/TQ codebook formats) | ready to test on a Q4_0 box: `bench/gfx906_dot8_kit.sh`, plan in `DOT8-KIT.md` |
+
+### The method note that cost a round
+
+The first DPP measurement read "no effect" because it measured **a build that did not contain the change**: the image's
+`/build` tree is configured with `-S /src`, and `/src` is a *copy* of the checkout inside the container, not a mount of
+it (the live mount is `/work`). Editing a kernel in the checkout changes nothing until the files are copied over, and a
+stale `/src` answers with the previous build's timings - which look exactly like a null result. `bench/gfx906_build.sh`
+now does the sync, re-applies `m-schenker/gfx906/patches/*` (the sync restores the *unpatched* tree, so without this the
+build silently loses every gfx906 change in the branch - a second way to measure the past), and rebuilds. Every number in
+the table above was taken through it.
+
 ## Rejected, with numbers (so nobody retries them)
 
 | idea | source | result |

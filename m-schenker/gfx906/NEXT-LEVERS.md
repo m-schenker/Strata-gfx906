@@ -179,3 +179,23 @@ a GDN model (or the chunk benchmark alone, which is a kernel-level number).
 `v_dot8_i32_i4` is **not** in this queue: it was measured in this branch (`IMPROVEMENTS.md` §6, `tools/hip/gfx906_dot8_bench.cpp`)
 at +17-83 % per kernel, and it is blocked on a 4-bit activation path (a numerics change) plus being inapplicable to
 IQ/TQ codebook formats - which is what this engine's low-bit experts are.
+
+---
+
+## Status after working through the queue (see `IMPROVEMENTS.md` §7 for the numbers)
+
+| § | lever | status |
+|---|---|---|
+| 1 | `__mul24` | **measured, noise** — bitwise, ±2 % both ways at 8/16/32 groups, kept as `patches/optional/0008`. The kernel is memory-bound, not integer-pipe-bound |
+| 2 | four-lanes-in-one MMVQ packing | not attempted in this pass — it is the one lever left that attacks the memory instruction count (16-byte loads instead of four 4-byte ones) on a kernel that *is* memory-bound; that makes it the strongest remaining candidate |
+| 3 | hyper-connection double quantisation | **found and fixed** (`patches/0006`) — the gfx906 `STRATA_GR_SPLIT=1` path quantised the activations twice per read |
+| 4 | router launch shape | analysed, not shipped: the 8-warp launch with 7 warps exiting is deliberate, the only real lever is a different selection topology (not bitwise), and the kernel is a few µs against a ~400 µs layer |
+| 5 | blob pointer address space | not retried: the earlier +2.8 % (T=1 only) must be re-targeted at a layer's blob *descriptor* and measured at the 2-5-token window |
+| 6 | residual-GEMV pipelining | left in the queue with its published number; needs the stall profile the profiler-less image cannot give |
+| 7 | DPP reductions | **measured, not shipped** (`patches/optional/0009`): the ISA change works, the hardware needs two slots of distance between dependent DPPs, and parity fails in the real kernel even with them |
+| 8 | wide LDS staging | measured where it applies: attention is already b128 everywhere; the trellis codebook staging is one pass per block, not a measurable share |
+| 9 | wave64 GDN | not applicable on this model (no GDN layers) — needs a GDN model for the number that matters |
+
+`v_dot8_i32_i4` has its own hand-off now: `DOT8-KIT.md` plus `bench/gfx906_dot8_kit.sh`, with real-Q4_0-tensor numbers
+from this card (+55 % / +141 % / +49 % at 8 / 16 / 32 groups, 4-bit activations costing 9 % relative RMS against 0.5 %
+for the shipped 8-bit path). Integration plan in that file, §4.
