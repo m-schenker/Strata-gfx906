@@ -269,6 +269,223 @@ __global__ void routeE(const float* __restrict__ logits, int32_t* __restrict__ i
     if (lane < 10) weights[lane] = selected * inv;
 }
 
+// ---- F: bitonic selection network, no data-dependent merge loop
+// E's remaining cost is its merge: a 10-step `if (kv_less(a,b)) pick a else pick b` loop, which is a serial
+// pointer chase through registers.  A bitonic top-k merge replaces it with compare-exchanges that are all
+// independent of each other, and 16 of them are available to issue at once.  Per lane: a bitonic sort of its own
+// 16 values, then five rounds of (exchange 16 slots with the partner lane, M[j] = max(L[j], reverse(P)[j]), clean
+// with strides 8/4/2/1).  Same ranking rule as A (value desc, lower id wins ties), so ids are expected bitwise.
+__device__ __forceinline__ void ce_desc(KV& a, KV& b) {        // a keeps the better of the two
+    const bool sw = !kv_less(a, b);
+    const float av = a.v, bv = b.v;
+    const int ai = a.id, bi = b.id;
+    a.v = sw ? bv : av; a.id = sw ? bi : ai;
+    b.v = sw ? av : bv; b.id = sw ? ai : bi;
+}
+__device__ __forceinline__ void kv_keep_max(KV& a, const KV& b) {   // a = the better of the two
+    const bool take = kv_less(b, a);
+    a.v = take ? b.v : a.v;
+    a.id = take ? b.id : a.id;
+}
+__device__ __forceinline__ void ce_asc(KV& a, KV& b) {        // a keeps the worse of the two
+    const bool sw = kv_less(a, b);
+    const float av = a.v, bv = b.v;
+    const int ai = a.id, bi = b.id;
+    a.v = sw ? bv : av; a.id = sw ? bi : ai;
+    b.v = sw ? av : bv; b.id = sw ? ai : bi;
+}
+
+template <int NY>
+__global__ void routeF(const float* __restrict__ logits, int32_t* __restrict__ ids, float* __restrict__ weights) {
+    logits += (size_t) blockIdx.x * 512; ids += (size_t) blockIdx.x * 10; weights += (size_t) blockIdx.x * 10;
+    if (threadIdx.y != 0) return;
+    const int lane = threadIdx.x;
+    float values[16];
+#pragma unroll
+    for (int i = 0; i < 16; ++i) values[i] = logits[lane + i * 32];
+    __syncthreads();
+    float maximum = -INFINITY;
+#pragma unroll
+    for (int i = 0; i < 16; ++i) maximum = max(maximum, values[i]);
+    maximum = warp_max32(maximum);
+    float sum = 0.0f;
+#pragma unroll
+    for (int i = 0; i < 16; ++i) { values[i] = expf(values[i] - maximum); sum += values[i]; }
+    const float reciprocal = 1.0f / warp_sum32(sum);
+#pragma unroll
+    for (int i = 0; i < 16; ++i) {
+        values[i] *= reciprocal;
+        if (__isnanf(values[i])) values[i] = -FLT_MAX;
+    }
+    // bitonic sort of this lane's 16 (branch-free: the network shape is compile-time)
+    KV x[16];
+#pragma unroll
+    for (int i = 0; i < 16; ++i) { x[i].v = values[i]; x[i].id = lane + i * 32; }
+#pragma unroll
+    for (int k = 2; k <= 16; k <<= 1) {
+#pragma unroll
+        for (int j = k >> 1; j > 0; j >>= 1) {
+#pragma unroll
+            for (int i = 0; i < 16; ++i) {
+                const int ixj = i ^ j;
+                if (ixj > i) {
+                    if ((i & k) == 0) ce_desc(x[i], x[ixj]);
+                    else ce_asc(x[i], x[ixj]);
+                }
+            }
+        }
+    }
+    // five rounds: exchange the sorted 16 with the partner, keep the top 16 of the two
+#pragma unroll
+    for (int m = 16; m; m >>= 1) {
+        KV p[16];
+#pragma unroll
+        for (int j = 0; j < 16; ++j) {                         // 32 independent shuffles
+            p[j].v = __shfl_xor(x[j].v, m, 32);
+            p[j].id = __shfl_xor(x[j].id, m, 32);
+        }
+#pragma unroll
+        for (int j = 0; j < 16; ++j) kv_keep_max(x[j], p[15 - j]);   // M = max(L, reverse(P))
+#pragma unroll
+        for (int stride = 8; stride >= 1; stride >>= 1) {       // bitonic clean, descending
+#pragma unroll
+            for (int i = 0; i < 16; ++i)
+                if ((i & stride) == 0) ce_desc(x[i], x[i + stride]);
+        }
+    }
+    float selected = 0.0f, selected_sum = 0.0f;
+#pragma unroll
+    for (int rank = 0; rank < 10; ++rank)
+        if ((x[rank].id & 31) == lane) selected_sum += x[rank].v;
+    if (lane < 10) selected = x[lane].v;
+    selected_sum = max(warp_sum32(selected_sum), 6.103515625e-5f);
+    const float inv = 1.0f / selected_sum;
+    if (lane < 10) ids[lane] = x[lane].id;
+    if (lane < 10) weights[lane] = selected * inv;
+}
+
+// ---- G: pack the expert id into the key, so a rank needs ONE reduction instead of two
+// A's ten ranks each do two 5-deep reductions (value, then id to break ties) = 100 shuffles.  E and F replace the
+// chain with merge networks and lose, because they *add* work.  This variant removes work instead: after the softmax
+// every value is in [0,1], so (uint)(v*2^24) is monotonic in v, and the low 9 bits can carry (511 - id) as the tie
+// break.  A lane then reduces ONE integer per rank - 50 shuffles instead of 100 - and the id, and therefore the owning
+// lane of the chosen expert, comes out of the key itself.  The weight still comes from the original float, so only the
+// selection order depends on the packing: two values closer than 2^-24 in v would tie and be broken by id, which is
+// 6e-8 of weight - the one way this differs from A.
+__device__ __forceinline__ unsigned rotr_key(float v, int id) {
+    const unsigned q = (unsigned) (v * 16777216.0f);          // 24 bits of value, clipped below
+    return (q << 9) | (unsigned) (511 - id);
+}
+
+template <int NY>
+__global__ void routeG(const float* __restrict__ logits, int32_t* __restrict__ ids, float* __restrict__ weights) {
+    logits += (size_t) blockIdx.x * 512; ids += (size_t) blockIdx.x * 10; weights += (size_t) blockIdx.x * 10;
+    if (threadIdx.y != 0) return;
+    const int lane = threadIdx.x;
+    float values[16];
+#pragma unroll
+    for (int i = 0; i < 16; ++i) values[i] = logits[lane + i * 32];
+    __syncthreads();
+    float maximum = -INFINITY;
+#pragma unroll
+    for (int i = 0; i < 16; ++i) maximum = max(maximum, values[i]);
+    maximum = warp_max32(maximum);
+    float sum = 0.0f;
+#pragma unroll
+    for (int i = 0; i < 16; ++i) { values[i] = expf(values[i] - maximum); sum += values[i]; }
+    const float reciprocal = 1.0f / warp_sum32(sum);
+    unsigned key[16];
+#pragma unroll
+    for (int i = 0; i < 16; ++i) {
+        values[i] *= reciprocal;
+        if (__isnanf(values[i])) values[i] = -FLT_MAX;
+        key[i] = rotr_key(values[i], lane + i * 32);
+    }
+    float selected = 0.0f, selected_sum = 0.0f;
+    for (int rank = 0; rank < 10; ++rank) {
+        unsigned best = key[0];
+#pragma unroll
+        for (int i = 1; i < 16; ++i) best = max(best, key[i]);
+#pragma unroll
+        for (int mask = 16; mask; mask >>= 1) best = max(best, __shfl_xor(best, mask, 32));   // 5 shuffles, value+id together
+        const int expert = 511 - (int) (best & 511u);
+        if ((expert & 31) == lane) {
+            key[expert >> 5] = 0u;                    // 0 sorts below any real key (id 511, value 0)
+            selected_sum += values[expert >> 5];
+            if (rank == 0 || true) { /* keep the same accumulation site as A */ }
+        }
+        if (rank == lane) {
+            // the rank's own value: recompute from the key so the lane holding rank r reports the r-th best
+            selected = (float) (best >> 9) * (1.0f / 16777216.0f);
+        }
+    }
+    selected_sum = max(warp_sum32(selected_sum), 6.103515625e-5f);
+    const float inverse = 1.0f / selected_sum;
+    if (lane < 10) weights[lane] = selected * inverse;
+}
+
+// ---- H: one reduction per rank, ties resolved by ballot (exact, no key packing)
+// G's mechanism - don't ship the id through the reduction - but without giving up exactness.  The id is not needed by
+// the reduction at all: after the 5-shuffle max every lane knows the winning VALUE, the lane that owns it knows which
+// slot it came from (and therefore the expert id), and if only one lane has that value there is nothing to break.  A
+// ballot detects the multi-lane tie case, which is the only case that needs the id-in-reduction of A, and it is rare.
+// So: 5 shuffles + 1 ballot per rank instead of 10 shuffles, the same exact float comparisons as A.
+__device__ __forceinline__ float warp_max_exact(float v) {
+#pragma unroll
+    for (int m = 16; m; m >>= 1) v = fmaxf(v, __shfl_xor(v, m, 32));
+    return v;
+}
+
+template <int NY>
+__global__ void routeH(const float* __restrict__ logits, int32_t* __restrict__ ids, float* __restrict__ weights) {
+    logits += (size_t) blockIdx.x * 512; ids += (size_t) blockIdx.x * 10; weights += (size_t) blockIdx.x * 10;
+    if (threadIdx.y != 0) return;
+    const int lane = threadIdx.x;
+    float values[16];
+#pragma unroll
+    for (int i = 0; i < 16; ++i) values[i] = logits[lane + i * 32];
+    __syncthreads();
+    float maximum = -INFINITY;
+#pragma unroll
+    for (int i = 0; i < 16; ++i) maximum = max(maximum, values[i]);
+    maximum = warp_max_exact(maximum);
+    float sum = 0.0f;
+#pragma unroll
+    for (int i = 0; i < 16; ++i) { values[i] = expf(values[i] - maximum); sum += values[i]; }
+    const float reciprocal = 1.0f / warp_max_exact(0.0f) * 0.0f;   // keep the compiler from reordering the barrier below
+    (void) reciprocal;
+    const float inv_sum = 1.0f / warp_sum32(sum);
+#pragma unroll
+    for (int i = 0; i < 16; ++i) {
+        values[i] *= inv_sum;
+        if (__isnanf(values[i])) values[i] = -FLT_MAX;
+    }
+    float selected = 0.0f, selected_sum = 0.0f;
+    for (int rank = 0; rank < 10; ++rank) {
+        float best = values[0];
+        int slot = 0;
+#pragma unroll
+        for (int i = 1; i < 16; ++i) if (values[i] > best) { best = values[i]; slot = i; }
+        best = warp_max_exact(best);                       // 5 shuffles, value only
+        const bool hit = (values[slot] == best);           // this lane owns the winning value?
+        const int cand = (int) (lane + slot * 32);
+        int winner = hit ? cand : 0x7FFFFFFF;
+        if (__popc(__ballot(hit)) > 1) {                   // rare, and uniform: several lanes hold the value
+#pragma unroll
+            for (int m = 16; m; m >>= 1) winner = min(winner, __shfl_xor(winner, m, 32));   // A picks the lower id
+        }
+        if (hit && cand == winner) {
+            ids[rank] = cand;
+            values[slot] = -INFINITY;
+            selected_sum += best;                          // accumulated by the owning lane, as in A
+        }
+        if (rank == lane) selected = best;                 // every lane has the rank's value
+    }
+    selected_sum = max(warp_sum32(selected_sum), 6.103515625e-5f);
+    const float inverse_selected_sum = 1.0f / selected_sum;
+    if (lane < 10) weights[lane] = selected * inverse_selected_sum;
+}
+
 __global__ void empty_k() { if (threadIdx.x == 1024) __builtin_trap(); }
 
 template <typename F>
@@ -299,6 +516,10 @@ int main(int argc, char** argv) {
     std::normal_distribution<float> nf(0.0f, 1.0f);
     std::vector<float> hl((size_t) tokens * 512);
     for (auto& v : hl) v = nf(rng);
+    if (std::getenv("ROUTER_TIES")) {            // exact ties everywhere: the path A's tie-break exists for
+        for (auto& v : hl) v = std::round(v * 2.0f) * 0.5f;
+        std::printf("ROUTER_TIES: logits forced onto exact ties\n");
+    }
 
     float* dl = nullptr;
     int32_t* di = nullptr;
@@ -335,5 +556,8 @@ int main(int argc, char** argv) {
     report("C one 64-lane wave", bench([&] { routeC<<<tokens, 64>>>(dl, di, dw); }, iters), false);
     report("D sorted-per-lane local max", bench([&] { routeD<8><<<tokens, dim3(32, 8)>>>(dl, di, dw); }, iters), true);
     report("E sort + merge tree", bench([&] { routeE<8><<<tokens, dim3(32, 8)>>>(dl, di, dw); }, iters), true);
+    report("F bitonic selection net", bench([&] { routeF<8><<<tokens, dim3(32, 8)>>>(dl, di, dw); }, iters), true);
+    report("G id packed in the key", bench([&] { routeG<8><<<tokens, dim3(32, 8)>>>(dl, di, dw); }, iters), false);
+    report("H ballot tie-break", bench([&] { routeH<8><<<tokens, dim3(32, 8)>>>(dl, di, dw); }, iters), true);
     return 0;
 }

@@ -328,3 +328,19 @@ Ordered by expected value on *this* card and model, from the code as it stands:
 The discussion's items that will most likely be **rejected with a number** on this codebase: dp4a rewriting (already
 integer dp4a), warp-reduction replacement in attention (already done), MMQ enablement (measured null once already).
 Recording those rejections is part of the deliverable — it stops the next person from retrying them.
+
+## Round 3 — the PR #1 review's four levers
+
+- [x] **R3-1** dot8 with a correction pass — **measured, exact version found**: base-16 digits of the 8-bit activation
+  (both 4-bit-representable) make a two-pass dot8 bit-identical to dp4a's integer accumulation at **+104 %** throughput
+  (16 groups), +26 % (32), parity (8). The rounded-residual variant lands at 0.85 % error, +97 %. Not in the engine:
+  IQ/TQ nibbles are codebook indices. `IMPROVEMENTS.md` §8
+- [x] **R3-2** bitonic top-k router — **measured**: merge tree / bitonic network / per-lane sort are all slower than the
+  engine's 16.2 µs (33.0 / 34.0 / 92.4), so the chain depth was the wrong explanation; removing the id from the
+  reduction (ballot tie-break) gives 9.60 µs, bitwise. End to end 38.05 vs 38.17 ms/step (noise). Shipped `patches/0009`
+- [x] **R3-3** L2 persistence for the hot expert set — **blocked, three ways**: no HIP persisting-L2 API on this stack,
+  hot set 13.1 MB against 8 MiB L2, and the decode GEMV's bandwidth rises with footprint (occupancy-bound, no cache
+  cliff). `tools/hip/gfx906_l2_probe.cpp`
+- [x] **R3-4** wave64-native 2-5 token verify kernel — **measured on both sides**: the 5-token window costs +52 % over 4
+  tokens (weights streamed twice at GRP_NC 4); chunk-by-5 removes it (258.4 → 193.6 µs) but costs 6-11 % on every other
+  shape through LDS occupancy. `optional/0012`; the both-sides fix is a separate kernel for 5-entry groups

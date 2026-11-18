@@ -96,6 +96,15 @@ Two process findings from this round, both now tooled: the image's build tree co
 failed DPP variant made a freshly built engine serve 1-3 tokens — which is what first made patches 0003-0005 look guilty
 when the real culprit was the stale tree.
 
+## Round 3 — the PR #1 review's four suggestions, one arm each
+
+| lever | what it turned into | numbers | call |
+|---|---|---|---|
+| dot8 + correction pass | two base-16 digits of the 8-bit activation are both valid 4-bit fields, so a second dot8 pass over the digits reproduces the dp4a integer result exactly | hi/lo: 0.0431 ms at 16 groups against dp4a's 0.0876 (**+104 %**) with the same 0.556 % error; +26 % at 32 groups; parity at 8. The rounded-residual version: 0.0445 ms, 0.808 % error | **not in the engine** (IQ/TQ nibbles are indices), kits and numbers recorded |
+| bitonic router | merge tree, bitonic network and per-lane sort all lose to the engine's 16.2 µs (33.0 / 34.0 / 92.4) - the cost is instruction count, not chain depth. Removing the id from the reduction (ballot tie-break) gives 9.60 µs, bitwise | kernel **1.69×**; engine **38.05 vs 38.17 ms/step** (0.3 %, inside noise) | **shipped** as `patches/0009`, with the engine number stated as unmeasurable |
+| L2 residency | no persisting-L2 API in this HIP, hot set 13.1 MB vs 8 MiB L2, and the GEMV's bandwidth rises with footprint (occupancy-bound, no cache cliff) | probe: 63.6 GB/s at 1 MiB → 597.9 at 52.4 MiB | **not implemented**, blocker recorded |
+| 2-5 token verify kernel | the 5-token window costs +52 % over 4 tokens (weights streamed twice, `GRP_NC = 4`); chunk-by-5 makes it one pass | 16×5 **258.4 → 193.6 µs (−25 %)**, bitwise, but 16×1 +11 %, 16×2 +8 %, 16×3 +7 %, 16×4 +6 %, 32×1 +10 % (LDS 11.5 → 14.4 KB) | **measured, not applied** (`optional/0012`); needs a separate kernel to get both sides |
+
 ## Measured, rejected (kept so the next person does not retry them)
 
 `native_expert_bench`, trellis types routed into the gfx906 64-lane/row layouts (the dispatch whitelist widened to

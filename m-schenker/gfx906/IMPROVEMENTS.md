@@ -433,3 +433,127 @@ the table above was taken through it.
 | 7 wave64-native shapes | tested and rejected as a default (§4). |
 | 8 tile size / MMQ_X | not applicable on this build. |
 | 9 profile first | partly, and the limit is now named: engine phase logs, expert/file-tier counters, the ELF resource table (`tools/hip/check_hip_spills.py`, with a committed baseline `tools/hip/gfx906-spill-baseline.json` so a future change cannot silently add spills) and `native_expert_bench`. **The image ships no profiler binary** - the TheRock tree has `librocprofiler-sdk*` but no `rocprof`/`rocprofv3`/`rocminfo` under `/opt/rocm/bin`, so hardware counters (LDS conflicts, stall attribution, waves achieved) are unavailable. Installing one is a build change, not an experiment: that is task P0-7 and it is the one thing that would unlock items 1, 3 and 9 properly. |
+
+---
+
+# Round 3 — the four levers from the PR review
+
+The review's four suggestions, each implemented and measured. One shipped, one shipped-but-unmeasurable end to end,
+one turned into a hard blocker with evidence, one measured on both sides of its trade-off.
+
+## 8. dot8 + a correction pass — the 4-bit activation penalty is removable, exactly
+
+`tools/hip/gfx906_dot8_bench.cpp` (extended this round; raw numbers in `bench/results/gfx906-dot8-correction.txt`).
+
+The review's idea: dot8's problem is not the weights (4-bit nibbles are what the instruction wants) but the
+**activations**, which have to drop from q8_1's 8 bits to 4 and cost 9 % relative RMS against 0.5 %. Correct the
+result with a second, cheaper pass over the residual.
+
+That works, and there is a version of it that is **exact**. Two ways to do it, both measured on real Q4_0 rows out of
+`mtp-Qwen3.8-Flash-Next-Q4_0.gguf` (`output.weight`, 248320 × 2560), 640 rows × G groups, K 2560, median of three, one
+MI50:
+
+| groups | dp4a (640 dots/row) | dot8 alone (320) | dot8 + rounded residual | dot8 hi/lo (exact) |
+|---|---|---|---|---|
+| 8 | 0.0321 ms · 0.552 % | 0.0207 ms · **9.383 %** | 0.0232 ms (+38 %) · 0.849 % | 0.0320 ms (+0 %) · **0.552 %** |
+| 16 | 0.0876 ms · 0.556 % | 0.0369 ms · **8.930 %** | 0.0445 ms (+97 %) · 0.808 % | 0.0431 ms (**+104 %**) · **0.556 %** |
+| 32 | 0.1061 ms · 0.554 % | 0.0713 ms · **9.545 %** | 0.0939 ms (+13 %) · 0.857 % | 0.0827 ms (**+26 %**) · **0.554 %** |
+
+**The exact encoding.** Split the 8-bit activation into two base-16 digits, `q8 = 16*h + l` with
+`h = (q8 + 8) >> 4` and `l = q8 - 16*h`. Both digits land in [-8, 7] for every integer `q8`, so neither is rounded a
+second time and the integer result is **identical** to the dp4a arm's — which is what the error column shows: 0.552 /
+0.556 / 0.554 on both. Two dot8 passes over the same weight nibbles then give 8-bit accuracy at **2.04× dp4a's
+throughput** where the ALU is the limit (16 groups), +26 % at 32 groups, and a wash at 8 groups where HBM is the limit.
+The activation scale uses 119 steps instead of 127 so every digit is representable; the dp4a arm is given the same
+119-step scale, so the comparison is the same numerics on both sides.
+
+Why the hybrid can be *faster* than dp4a at the same accuracy: both issue the same number of dot instructions (640 per
+row), but dp4a has to unpack the weight nibbles into 8-bit fields (two masks per 8 values) while dot8 reads the packed
+nibbles directly, twice. The unpack is the whole difference at 16 groups.
+
+**The rounded-residual variant** the review described recovers most of the loss, not all of it (0.81-0.86 % instead of
+0.55 %) because the residual is itself 4-bit quantised — it needs its own per-block scale, since |r| reaches 9.07 in q8
+units and 10 % of values would otherwise clip.
+
+**The partial dial is a loss, not a saving.** Correcting only 1/4 or 2/4 of K makes the kernel *slower* than correcting
+all of it (0.0258-0.0999 ms for 8.5-8.9 % error): lanes diverge on the strided `b & 3 < CORR` test, and the error only
+falls as √(1-f) because the residual noise is white. The useful settings are off and on.
+
+So the numerics objection to dot8 is gone for Q4_0/Q4_1/Q4_K-style formats. What still keeps it out of the engine is
+(2) in §6: IQ4/IQ2/TQ store **codebook indices** in those nibbles, and index × index is meaningless. That is a format
+property, not a precision one, and it is not fixed by a correction pass.
+
+## 9. `0009-both-gfx906-router-ballot-select.patch` — half the router's shuffles
+
+The review's diagnosis was that the router's cost is a 100-deep dependent `ds_bpermute` chain. Three rewrites that
+shorten the chain (a merge tree, a bitonic selection network, per-lane sorting) were measured and **all three are
+slower** — 33.0, 34.0 and 92.4 µs against the engine's 16.2 µs. That refutes the diagnosis: the router is bound by
+**instruction count**, because every rank carries both the value and the id through every reduction.
+
+So remove the work instead of the depth. The reduction does not need the id: after the 5-shuffle max every lane knows
+the winning value, the lane that owns it knows which slot it came from, and a ballot detects the rare case where several
+lanes hold that value — the only case that has to break a tie, and therefore the only case that needs an id reduce.
+
+| variant | µs/call | parity |
+|---|---|---|
+| A engine (two reductions per rank) | 16.24 | reference |
+| B engine geometry, one warp | 17.56 | bitwise |
+| C one 64-lane wave | 19.46 | same set |
+| D sorted-per-lane local max | 92.44 | bitwise |
+| E sort + merge tree | 33.01 | bitwise |
+| F bitonic selection network | 34.04 | bitwise |
+| G id packed into a 24-bit key | **8.02** | same set, weights differ 4.0e-07 |
+| **H ballot tie-break (shipped)** | **9.60** | **bitwise ids and bitwise weights** |
+
+`tools/hip/gfx906_router_lab.cpp` checks A against every variant, including a logits set made entirely of exact ties
+(`ROUTER_TIES=1`), which is the only case the ballot path has to handle specially.
+
+**End to end it does not show.** Same binary, `STRATA_ROUTER_BALLOT=0/1`, 700-token generations, decode measured per
+speculative step (`predicted_ms / (predicted_n - draft_n_accepted)`, which normalises out the drafter's acceptance rate):
+**38.05 ms/step with ballot on against 38.17 with it off (0.3 %)**. The kernel saves 6.6 µs a call and this model has
+48 layers, so ~0.3 ms of a 38 ms step — the same size as the probe's resolution. Shipped because it is bitwise and
+strictly less work, *not* because a decode gain could be demonstrated here.
+
+One trap worth recording: the env switch must be read at engine start-up. A `cudaMemcpyToSymbol` on the first router
+call lands inside a captured HIP graph and the capture fails with `blk.0.router: operation failed due to a previous
+error during capture`, which is what made the first build of this patch look broken.
+
+## 10. L2 residency for the hot expert set — no API, wrong size, wrong bottleneck
+
+`tools/hip/gfx906_l2_probe.cpp`, results in `bench/results/gfx906-l2-residency-probe.txt`. Three independent blockers:
+
+1. **No API on this stack.** TheRock ROCm 10.3's HIP headers have no `hipDeviceAttributePersistingL2CacheSize` and no
+   access-policy-window type: the CUDA surface (`cudaAccessPolicyWindow`, `cudaLimitPersistingL2CacheSize`) has no HIP
+   equivalent here. There is nothing to set.
+2. **The hot set does not fit.** MI50 has **8 MiB** of L2, not 4. One layer's decode picks 10 experts × 1.31 MB =
+   13.1 MB, and 48 layers are live per token — a window could pin a fifth of one layer.
+3. **The GEMV is not cache-limited in this shape.** Measured bandwidth *rises* with the footprint (63.6 GB/s at 1 MiB,
+   386.6 at 13.1 MiB, 597.9 at 52.4 MiB): the small footprints have only 102-409 rows to issue, so they are
+   occupancy-limited, not waiting on HBM. There is no cache cliff for a residency policy to remove.
+
+Not implemented, and recorded so it is not retried blind.
+
+## 11. The 2-5 token verify window — the cliff is real, the fix is a separate kernel
+
+`native_expert_bench` with the window sizes a `--spec 4` step produces (baseline file
+`bench/results/gfx906-kernel-verify-window-baseline.txt`):
+
+| shape | all | gate/up | down |
+|---|---|---|---|
+| 16 × 1 | 115.0 µs | 78.5 | 38.3 |
+| 16 × 2 | 136.1 | 85.4 | 48.9 |
+| 16 × 3 | 152.5 | 99.6 | 53.1 |
+| 16 × 4 | 169.7 | 114.6 | 60.8 |
+| **16 × 5** | **258.4** | 176.0 | 91.6 |
+| 16 × 6 | 288.1 | 192.4 | 100.4 |
+
+A 5-token window costs **+52 % over a 4-token one for 25 % more tokens**, because a group of 5 entries is chunked
+`GRP_NC = 4` and paid as 4 + 1: the weight row is streamed twice. That is the real content of the "small-batch verify"
+problem on this card — all 64 lanes are already busy; what is wrong is the number of times the weights are read.
+
+`patches/optional/0012` chunks by 5 and adds the `n == 5` case, so the window is one pass: **16 × 5 goes 258.4 →
+193.6 µs (−25 %)**, bitwise. But the staging buffer grows 11.5 → 14.4 KB of LDS, and everything else pays for it:
+16 × 1 +11 %, 16 × 2 +8 %, 16 × 3 +7 %, 16 × 4 +6 %, 32 × 1 +10 %. On a workload dominated by 2-4 token windows that is
+a net regression, so it is not applied. Getting both sides needs the 5-entry path in a **separate kernel** that can
+carry the larger staging buffer without taking it from the 1-4 entry kernels — a new kernel plus a launcher branch on
+the window size, which is the next step this measurement points at rather than a template change.

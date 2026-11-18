@@ -1,0 +1,178 @@
+diff --git a/src/kernels/cuda/native_router.cu b/src/kernels/cuda/native_router.cu
+index 6611bce..4b081e7 100644
+--- a/src/kernels/cuda/native_router.cu
++++ b/src/kernels/cuda/native_router.cu
+@@ -26,6 +26,7 @@
+ #include <cfloat>
+ #include <cstddef>
+ #include <cstdint>
++#include <cstdlib>
+ #include <stdexcept>
+ 
+ namespace strata::kernels {
+@@ -41,6 +42,59 @@ __device__ __forceinline__ float warp_max(float value) {
+     for (int mask = 16; mask; mask >>= 1) value = fmaxf(value, __shfl_xor_sync(0xffffffffu, value, mask, 32));
+     return value;
+ }
++__device__ int g_router_ballot_dev = 1;   // STRATA_ROUTER_BALLOT=0: the two-reduction selection, for A/B
++// One reduction per rank instead of two.  The reduction does not need the id: after the 5-shuffle max every lane
++// knows the winning VALUE, the lane owning it knows which slot it came from, and a ballot detects the rare case where
++// several lanes hold that value - the only case that has to break a tie, and so the only case that needs an id reduce.
++// That halves the shuffles a call issues (10 per rank -> 5) with the same exact float comparisons, so the ids and the
++// weights come out bitwise what the two-reduction loop produced (tools/hip/gfx906_router_lab.cpp checks that, including
++// a logits set made entirely of exact ties).  Written as a select-and-accumulate so all three shapes - the 512/10
++// single-token route, its multi-token twin and the generic NE/K template - share it.
++template <int K, int V>
++__device__ __forceinline__ void select_ranks(float (&values)[V], int32_t* __restrict__ ids, int lane,
++                                             float& selected, float& selected_sum) {
++    const bool ballot = g_router_ballot_dev != 0;
++    for (int rank = 0; rank < K; ++rank) {
++        float best = values[0];
++        int slot = 0;
++#pragma unroll
++        for (int i = 1; i < V; ++i) {
++            if (values[i] > best) { best = values[i]; slot = i; }
++        }
++        if (ballot) {
++#pragma unroll
++            for (int mask = 16; mask; mask >>= 1) best = fmaxf(best, __shfl_xor_sync(0xffffffffu, best, mask, 32));
++            const bool hit = (values[slot] == best);
++            const int cand = lane + slot * 32;
++            int winner = hit ? cand : 0x7FFFFFFF;
++            if (__popc(__ballot_sync(0xffffffffu, hit)) > 1) {   // rare, and uniform across the warp
++#pragma unroll
++                for (int mask = 16; mask; mask >>= 1)
++                    winner = min(winner, __shfl_xor_sync(0xffffffffu, winner, mask, 32));
++            }
++            if (hit && cand == winner) {
++                ids[rank] = cand;
++                values[slot] = -INFINITY;
++                selected_sum += best;   // accumulated by the winning expert's lane, as before
++            }
++        } else {
++            int expert = lane + slot * 32;
++#pragma unroll
++            for (int mask = 16; mask; mask >>= 1) {
++                const float other = __shfl_xor_sync(0xffffffffu, best, mask, 32);
++                const int other_id = __shfl_xor_sync(0xffffffffu, expert, mask, 32);
++                if (other > best || (other == best && other_id < expert)) { best = other; expert = other_id; }
++            }
++            if ((expert & 31) == lane) {
++                values[expert / 32] = -INFINITY;
++                ids[rank] = expert;
++                selected_sum += best;
++            }
++        }
++        if (rank == lane) selected = best;
++    }
++}
++
+ __launch_bounds__(256, 1)
+ __global__ void route(const float* __restrict__ logits, int32_t* __restrict__ ids,
+                       float* __restrict__ weights) {
+@@ -70,28 +124,7 @@ __global__ void route(const float* __restrict__ logits, int32_t* __restrict__ id
+         if (__isnanf(values[i])) values[i] = -FLT_MAX;
+     }
+     float selected = 0.0f, selected_sum = 0.0f;
+-    for (int rank = 0; rank < 10; ++rank) {
+-        float best = values[0];
+-        int expert = lane;
+-#pragma unroll
+-        for (int i = 1; i < 16; ++i) {
+-            if (values[i] > best) { best = values[i]; expert = lane + i * 32; }
+-        }
+-#pragma unroll
+-        for (int mask = 16; mask; mask >>= 1) {
+-            const float other = __shfl_xor_sync(0xffffffffu, best, mask, 32);
+-            const int other_id = __shfl_xor_sync(0xffffffffu, expert, mask, 32);
+-            if (other > best || (other == best && other_id < expert)) { best = other; expert = other_id; }
+-        }
+-        if ((expert & 31) == lane) {
+-            values[expert / 32] = -INFINITY;
+-            ids[rank] = expert;
+-            // Deliberately accumulate by WINNING EXPERT lane, not output rank.
+-            // Multiple selected experts in one lane add in selection order.
+-            selected_sum += best;
+-        }
+-        if (rank == lane) selected = best;
+-    }
++    select_ranks<10, 16>(values, ids, lane, selected, selected_sum);
+     selected_sum = max(warp_sum(selected_sum), 6.103515625e-5f);
+     const float inverse_selected_sum = 1.0f / selected_sum;
+     if (lane < 10) weights[lane] = selected * inverse_selected_sum;
+@@ -124,26 +157,7 @@ __global__ void route_multi(const float* __restrict__ logits, int32_t* __restric
+         if (__isnanf(values[i])) values[i] = -FLT_MAX;
+     }
+     float selected = 0.0f, selected_sum = 0.0f;
+-    for (int rank = 0; rank < 10; ++rank) {
+-        float best = values[0];
+-        int expert = lane;
+-#pragma unroll
+-        for (int i = 1; i < 16; ++i) {
+-            if (values[i] > best) { best = values[i]; expert = lane + i * 32; }
+-        }
+-#pragma unroll
+-        for (int mask = 16; mask; mask >>= 1) {
+-            const float other = __shfl_xor_sync(0xffffffffu, best, mask, 32);
+-            const int other_id = __shfl_xor_sync(0xffffffffu, expert, mask, 32);
+-            if (other > best || (other == best && other_id < expert)) { best = other; expert = other_id; }
+-        }
+-        if ((expert & 31) == lane) {
+-            values[expert / 32] = -INFINITY;
+-            ids[rank] = expert;
+-            selected_sum += best;
+-        }
+-        if (rank == lane) selected = best;
+-    }
++    select_ranks<10, 16>(values, ids, lane, selected, selected_sum);
+     selected_sum = max(warp_sum(selected_sum), 6.103515625e-5f);
+     const float inverse_selected_sum = 1.0f / selected_sum;
+     if (lane < 10) weights[lane] = selected * inverse_selected_sum;
+@@ -181,26 +195,7 @@ __global__ void route_topk(const float* __restrict__ logits, int32_t* __restrict
+         if (__isnanf(values[i])) values[i] = -FLT_MAX;
+     }
+     float selected = 0.0f, selected_sum = 0.0f;
+-    for (int rank = 0; rank < K; ++rank) {
+-        float best = values[0];
+-        int expert = lane;
+-#pragma unroll
+-        for (int i = 1; i < V; ++i) {
+-            if (values[i] > best) { best = values[i]; expert = lane + i * 32; }
+-        }
+-#pragma unroll
+-        for (int mask = 16; mask; mask >>= 1) {
+-            const float other = __shfl_xor_sync(0xffffffffu, best, mask, 32);
+-            const int other_id = __shfl_xor_sync(0xffffffffu, expert, mask, 32);
+-            if (other > best || (other == best && other_id < expert)) { best = other; expert = other_id; }
+-        }
+-        if ((expert & 31) == lane) {
+-            values[expert / 32] = -INFINITY;
+-            ids[rank] = expert;
+-            selected_sum += best;
+-        }
+-        if (rank == lane) selected = best;
+-    }
++    select_ranks<K, V>(values, ids, lane, selected, selected_sum);
+     selected_sum = max(warp_sum(selected_sum), 6.103515625e-5f);
+     const float inverse_selected_sum = 1.0f / selected_sum;
+     if (lane < K) weights[lane] = selected * inverse_selected_sum;
+@@ -214,7 +209,18 @@ bool overlap(const void* a, size_t an, const void* b, size_t bn) {
+     return ap < bp + bn && bp < ap + an;
+ }
+ }
+-void native_router_set_enabled(bool value) { enabled.store(value, std::memory_order_relaxed); }
++inline void router_ballot_init() {
++    static bool once = false;
++    if (once) return;
++    once = true;
++    const char* v = std::getenv("STRATA_ROUTER_BALLOT");
++    const int on = !(v && v[0] == '0');
++    cudaMemcpyToSymbol(g_router_ballot_dev, &on, sizeof(on));
++}
++void native_router_set_enabled(bool value) {
++    router_ballot_init();   // engine start-up: a symbol write inside a captured launch breaks the HIP graph
++    enabled.store(value, std::memory_order_relaxed);
++}
+ bool native_router_enabled() { return enabled.load(std::memory_order_relaxed); }
+ void native_router_top10(const float* logits, int32_t* ids, float* weights, void* stream) {
+     if (!stream || !valid(logits, 512 * 4) || !valid(ids, 10 * 4) || !valid(weights, 10 * 4)

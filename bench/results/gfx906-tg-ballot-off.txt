@@ -1,0 +1,7 @@
+# gfx906 decode probe: ballot-off   2026-11-18T20:55:45+01:00
+rep 1: 65 tok 1.169 s, 129 tok 3.109 s -> decode 33.0 tok/s
+rep 2: 65 tok 1.029 s, 129 tok 2.123 s -> decode 58.5 tok/s
+rep 3: 65 tok 0.991 s, 129 tok 2.040 s -> decode 61.0 tok/s
+rep 4: 65 tok 0.970 s, 129 tok 1.812 s -> decode 76.0 tok/s
+rep 5: 65 tok 0.964 s, 129 tok 1.888 s -> decode 69.3 tok/s
+rep 6: 65 tok 0.889 s, 129 tok 1.945 s -> decode 60.6 tok/s

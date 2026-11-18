@@ -1,0 +1,35 @@
+# Router: one reduction per rank, ties by ballot - kernel wins, engine does not notice
+# one MI50 (gfx906), card exclusive.  Router-only arm: tools/hip/gfx906_router_lab.cpp, 512 logits / top-10,
+# 400-500 launches a run, medians of 5 runs.
+
+variant                          single token   ids/weights parity
+-------------------------------  -------------  ------------------
+A engine (two reductions/rank)      16.24 us    reference
+B engine geometry, 1 warp           17.56 us    bitwise
+C one 64-lane wave                  19.46 us    same set
+D sorted-per-lane local max         92.44 us    bitwise
+E sort + merge tree                 33.01 us    bitwise
+F bitonic selection network         34.04 us    bitwise
+G id packed into the key             8.02 us    same set, weights differ by 4.0e-07
+H ballot tie-break                   9.60 us    bitwise, weights bitwise
+
+# what it means
+#  - E and F refute the "100-deep dependent shuffle chain" explanation: both shorten the chain (merge networks,
+#    independent compare-exchanges) and both are 2x SLOWER, because they add work.  The router is bound by the
+#    instruction count of carrying (value, id) through every reduction, not by the depth of the chain.
+#  - H removes that work: the reduction runs on the value only, the owning lane knows the slot, and a ballot
+#    detects the rare multi-lane tie - the only case that needs the id in a reduce.  10 shuffles/rank -> 5
+#    (+5 in a tie round).  Bitwise ids AND bitwise weights, including on a logits set of exact ties
+#    (ROUTER_TIES=1 in the lab).
+#  - G is cheaper still (8.0 us) by packing (511-id) into the low 9 bits of a 24-bit value key, but two values
+#    within 2^-24 then tie, so it is not bitwise; not shipped.
+#
+# engine level (same binary, STRATA_ROUTER_BALLOT=0/1, 700-token generation, decode cost per speculative step
+# = predicted_ms / (predicted_n - draft_n_accepted), which normalises out the drafter's acceptance rate):
+#
+#   ballot on   38.05 ms/step   51.7 tok/s   acceptance 50%
+#   ballot off  38.17 ms/step   51.5 tok/s   acceptance 49%
+#
+# so ~0.3 % - inside the +/-1 % resolution of the probe.  The kernel saves 6.6 us a call; at this model's layer
+# count that is ~0.4 ms of a 38 ms step, which is the same order as the noise.  Shipped because it is bitwise and
+# strictly less work, NOT because an end-to-end gain could be demonstrated here.

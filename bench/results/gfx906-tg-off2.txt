@@ -1,0 +1,2 @@
+# gfx906 decode probe: off2   2026-11-18T21:10:35+01:00
+rep 1: 65 tok 1.094 s, 129 tok 3.614 s -> decode 25.4 tok/s

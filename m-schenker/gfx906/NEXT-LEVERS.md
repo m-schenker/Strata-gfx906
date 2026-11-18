@@ -199,3 +199,16 @@ IQ/TQ codebook formats - which is what this engine's low-bit experts are.
 `v_dot8_i32_i4` has its own hand-off now: `DOT8-KIT.md` plus `bench/gfx906_dot8_kit.sh`, with real-Q4_0-tensor numbers
 from this card (+55 % / +141 % / +49 % at 8 / 16 / 32 groups, 4-bit activations costing 9 % relative RMS against 0.5 %
 for the shipped 8-bit path). Integration plan in that file, §4.
+
+## Round-3 queue (from the PR #1 review) — all four measured
+
+| # | lever | outcome | where |
+|---|---|---|---|
+| A | dot8 + a correction pass over the residual | **Measured, and it becomes exact**: two base-16 digits of the 8-bit activation are both representable 4-bit fields, so dot8 hi/lo reproduces dp4a's integer result at 2.04× its throughput (16 groups), +26 % (32), parity (8). The rounded-residual variant the review described lands at 0.85 % error, +97 % at 16 groups. Still not in the engine: IQ/TQ nibbles are codebook indices, not values. | `IMPROVEMENTS.md` §8, `bench/results/gfx906-dot8-correction.txt` |
+| B | bitonic top-k router network | **Measured, refuted as an explanation, then beaten a different way**: shortening the dependency chain (merge tree 33.0 µs, bitonic 34.0 µs, per-lane sort 92.4 µs) all lose to 16.2 µs, so the cost is instruction count, not depth. Removing the id from the reduction (ballot tie-break) gives **9.60 µs, bitwise** — shipped as `patches/0009`. End to end 38.05 vs 38.17 ms/step, i.e. inside the noise. | `IMPROVEMENTS.md` §9, `tools/hip/gfx906_router_lab.cpp` |
+| C | L2 persistence for the hot expert set | **Not implementable here, three ways**: no HIP persisting-L2 API in this stack, hot set 13.1 MB against an 8 MiB L2, and the decode GEMV's measured bandwidth rises with footprint (occupancy-limited, no cache cliff). | `IMPROVEMENTS.md` §10, `tools/hip/gfx906_l2_probe.cpp` |
+| D | wave64-native 2-5 token verify kernel | **Measured both sides**: the 5-token window costs +52 % over 4 tokens because the group chunking streams the weights twice; chunk-by-5 removes it (258.4 → 193.6 µs, bitwise) but costs 6-11 % on every other shape through LDS occupancy. `optional/0012`; the fix that gets both is a separate kernel for 5-entry groups. | `IMPROVEMENTS.md` §11, `bench/results/gfx906-kernel-verify-window-baseline.txt` |
+
+The next levers this round leaves on the table, in the order the numbers support: the separate 5-entry verify kernel (D),
+a Q4_0 box for the exact dot8 hi/lo path (A), and nothing on the router until the selection itself changes shape (B is
+now within 0.3 % of free at the engine level).

@@ -100,16 +100,114 @@ __global__ void gemv_dot8(const BlockW* __restrict__ w, const BlockQ4* __restric
     if (lane == 0) y[row] = acc;
 }
 
+// ------------------------------------------------------------------------------------------------
+// The correction arm.  dot8's weakness is the 4-bit ACTIVATION, not the weight: 7 steps of range.
+// The fix that keeps the instruction count down is a second dot8 pass over the residual, packed in
+// the same 4-bit fields, so the WEIGHT still never leaves its nibbles and both passes ride one
+// instruction each per 8 values:
+//
+//     d8*q8_i  =  d4*q4_i  +  d8*r_i,     r_i = q8_i - (d4/d8)*q4_i
+//     r_i has magnitude up to (d4/d8)/2 = 9.07 in q8 units - MEASURED at |r| mean 4.25 - so it does
+//     not fit a 4-bit field as it stands.  Give the residual its own per-block scale sr (r4 = r/sr,
+//     adimensional, in [-8,7]) and the correction stays 4-bit:
+//
+//     y        =  d4 * sum(w*q4)  +  (d8*sr) * sum(w*r4)
+//
+// That is 2 x 320 dots/row against dp4a's 640, and neither pass needs the per-4-value nibble unpack
+// (2 masks + shifts per 8 values) a dp4a arm has to do to feed 8-bit weights - the weight nibbles are
+// read by both passes as they are.  CORR selects how much of K gets the second pass.
+struct BlockQ4R {                            // 4-bit residuals + the coefficient the correction needs
+    float c;                                 // d8 * sr
+    uint32_t q[QK / 8];
+};
+
+template <int CORR>                          // 0, 1, 2 or 4 quarters of K - compile-time, so no branch
+__global__ void gemv_dot8_corr(const BlockW* __restrict__ w, const BlockQ4* __restrict__ x,
+                               const BlockQ4R* __restrict__ xr, float* __restrict__ y,
+                               int n_row, int n_blk) {
+    const int lane = threadIdx.x & 63;
+    const int row = blockIdx.x * (blockDim.x / 64) + (threadIdx.x >> 6);
+    if (row >= n_row) return;
+    float acc = 0.0f;
+    for (int b = lane; b < n_blk; b += 64) {
+        const BlockW* wb = w + (size_t) row * n_blk + b;
+        const BlockQ4* xb = x + b;
+        int s = 0;
+#pragma unroll
+        for (int i = 0; i < QK / 8; ++i) s = __builtin_amdgcn_sdot8((int) wb->q[i], (int) xb->q[i], s, false);
+        float v = (float) xb->d * (float) s;
+        if (CORR == 4 || (CORR != 0 && (((int) (b & 3)) < CORR))) {
+            const BlockQ4R* rb = xr + b;
+            int sr = 0;
+#pragma unroll
+            for (int i = 0; i < QK / 8; ++i) sr = __builtin_amdgcn_sdot8((int) wb->q[i], (int) rb->q[i], sr, false);
+            v += rb->c * (float) sr;
+        }
+        acc += wb->d * v;
+    }
+#pragma unroll
+    for (int o = 32; o > 0; o >>= 1) acc += __shfl_xor(acc, o, 64);
+    if (lane == 0) y[row] = acc;
+}
+
+// ------------------------------------------------------------------------------------------------
+// The exact version of the same idea.  Instead of a rounded residual, split the 8-bit activation into
+// two 4-bit DIGITS, base 16 - both digits land in [-8, 7] by construction, so nothing is rounded a
+// second time and the result is bit-identical to the dp4a arm's integer accumulation:
+//
+//     q8 = 16*h + l,        h = floor((q8+8)/16), l = q8 - 16*h       (both 4-bit two's complement)
+//     y  = d8 * ( 16*sum(w*h) + sum(w*l) )
+//
+// Two dot8 passes over the same weight nibbles, which is the same instruction COUNT as dp4a (640
+// dots/row) but without dp4a's per-4-value nibble unpack.  To make every digit representable the
+// activation scale uses 119 steps rather than 127 (so |q8| <= 119, |h| <= 7, |l| <= 7); the dp4a arm
+// uses the same 119-step scale here, so this is the same numerics on both sides.
+__global__ void gemv_dot8_hilo(const BlockW* __restrict__ w, const BlockQ4* __restrict__ xh,
+                               const BlockQ4* __restrict__ xl, float* __restrict__ y,
+                               int n_row, int n_blk) {
+    const int lane = threadIdx.x & 63;
+    const int row = blockIdx.x * (blockDim.x / 64) + (threadIdx.x >> 6);
+    if (row >= n_row) return;
+    float acc = 0.0f;
+    for (int b = lane; b < n_blk; b += 64) {
+        const BlockW* wb = w + (size_t) row * n_blk + b;
+        int sh = 0, sl = 0;
+#pragma unroll
+        for (int i = 0; i < QK / 8; ++i) {
+            const int wv = (int) wb->q[i];
+            sh = __builtin_amdgcn_sdot8(wv, (int) xh[b].q[i], sh, false);
+            sl = __builtin_amdgcn_sdot8(wv, (int) xl[b].q[i], sl, false);
+        }
+        acc += wb->d * (float) xh[b].d * (float) (16 * sh + sl);
+    }
+#pragma unroll
+    for (int o = 32; o > 0; o >>= 1) acc += __shfl_xor(acc, o, 64);
+    if (lane == 0) y[row] = acc;
+}
+
 struct Case { int rows, k, groups; };
 
 void* g_sx = nullptr;   // the per-block activation sums the dp4a arm's bias correction needs
 
-double bench(bool dot8, const Case& c, void* w, void* x, float* y, int iters) {
+void* g_xres = nullptr;   // 4-bit residual activations + their 8-bit scale
+void* g_xhi = nullptr;    // 4-bit high digit of the 8-bit activations
+void* g_xlo = nullptr;    // 4-bit low digit
+
+double bench(bool dot8, const Case& c, void* w, void* x, float* y, int iters, int corr = -1) {
     auto launch = [&](int reps) {
         const int wpb = 4;
         const unsigned grid = (unsigned) ((c.rows * c.groups + wpb - 1) / wpb);
         for (int i = 0; i < reps; ++i) {
-            if (dot8)
+            if (corr == 0 || corr == 1 || corr == 2 || corr == 4) {
+                const dim3 g_(grid), b_(64 * wpb);
+                if (corr == 0) gemv_dot8_corr<0><<<g_, b_>>>((const BlockW*) w, (const BlockQ4*) x, (const BlockQ4R*) g_xres, y, c.rows * c.groups, c.k / QK);
+                else if (corr == 1) gemv_dot8_corr<1><<<g_, b_>>>((const BlockW*) w, (const BlockQ4*) x, (const BlockQ4R*) g_xres, y, c.rows * c.groups, c.k / QK);
+                else if (corr == 2) gemv_dot8_corr<2><<<g_, b_>>>((const BlockW*) w, (const BlockQ4*) x, (const BlockQ4R*) g_xres, y, c.rows * c.groups, c.k / QK);
+                else gemv_dot8_corr<4><<<g_, b_>>>((const BlockW*) w, (const BlockQ4*) x, (const BlockQ4R*) g_xres, y, c.rows * c.groups, c.k / QK);
+            } else if (corr == -2)
+                gemv_dot8_hilo<<<grid, 64 * wpb>>>((const BlockW*) w, (const BlockQ4*) g_xhi, (const BlockQ4*) g_xlo, y,
+                                                  c.rows * c.groups, c.k / QK);
+            else if (dot8)
                 gemv_dot8<<<grid, 64 * wpb>>>((const BlockW*) w, (const BlockQ4*) x, y, c.rows * c.groups, c.k / QK);
             else
                 gemv_dp4a<<<grid, 64 * wpb>>>((const BlockW*) w, (const BlockQ8*) x, y, c.rows * c.groups, c.k / QK,
@@ -287,8 +385,9 @@ int main(int argc, char** argv) {
     for (int b = 0; b < n_blk; ++b) {
         float amax = 0.0f;
         for (int i = 0; i < QK; ++i) { xf[b][i] = nf(rng); amax = std::max(amax, std::fabs(xf[b][i])); }
-        hx8[b].d = amax / 127.0f;
-        for (int i = 0; i < QK; ++i) hx8[b].qs[i] = (int8_t) std::lround(xf[b][i] / hx8[b].d);
+        hx8[b].d = amax / 119.0f;        // 119, not 127: every base-16 digit then fits 4 bits (see gemv_dot8_hilo)
+        for (int i = 0; i < QK; ++i)
+            hx8[b].qs[i] = (int8_t) std::max(-119, std::min(119, (int) std::lround(xf[b][i] / hx8[b].d)));
         hx4[b].d = amax / 7.0f;
         for (int i = 0; i < QK / 8; ++i) {
             uint32_t v = 0;
@@ -314,6 +413,33 @@ int main(int argc, char** argv) {
         ref[r] = (float) s;
     }
 
+    // ---- residual activations for the correction arm: r = q8 - (d4/d8)*q4, in 4-bit two's complement
+    std::vector<BlockQ4R> hxres(n_blk);
+    int r_clipped = 0;
+    double r_abs_mean = 0.0;
+    for (int b = 0; b < n_blk; ++b) {
+        // sr puts the residual's full range (+-(d4/d8)/2 in q8 units) into [-8, 7]
+        const double sr = 0.5 * (double) hx4[b].d / (double) hx8[b].d / 7.0;
+        hxres[b].c = (float) ((double) hx8[b].d * sr);
+        for (int i = 0; i < QK / 8; ++i) {
+            uint32_t v = 0;
+            for (int j = 0; j < 4; ++j) {
+                for (int half = 0; half < 2; ++half) {
+                    const int idx = i * 8 + j + 4 * half;
+                    const int q4 = std::max(-8, std::min(7, (int) std::lround(xf[b][idx] / hx4[b].d)));
+                    const double r = (double) hx8[b].qs[idx] - (double) hx4[b].d / (double) hx8[b].d * (double) q4;
+                    int r4 = (int) std::lround(r / sr);
+                    if (r4 > 7) { r4 = 7; ++r_clipped; }
+                    if (r4 < -8) { r4 = -8; ++r_clipped; }
+                    r_abs_mean += std::abs(r4);
+                    v |= (uint32_t) (r4 & 0xF) << (8 * j + 4 * half);
+                }
+            }
+            hxres[b].q[i] = v;
+        }
+    }
+    r_abs_mean /= (double) n_blk * QK;
+
     std::vector<int> hsx(n_blk, 0);
     for (int b = 0; b < n_blk; ++b) for (int i = 0; i < QK; ++i) hsx[b] += hx8[b].qs[i];
 
@@ -327,6 +453,35 @@ int main(int argc, char** argv) {
     HIP_CHECK(hipMemcpy(dw2, hw_dot8.data(), hw_dot8.size() * sizeof(BlockW), hipMemcpyHostToDevice));
     HIP_CHECK(hipMemcpy(dx8, hx8.data(), hx8.size() * sizeof(BlockQ8), hipMemcpyHostToDevice));
     HIP_CHECK(hipMemcpy(dx4, hx4.data(), hx4.size() * sizeof(BlockQ4), hipMemcpyHostToDevice));
+    std::vector<BlockQ4> hxhi(n_blk), hxlo(n_blk);
+    int digit_clipped = 0;
+    for (int b = 0; b < n_blk; ++b) {
+        hxhi[b].d = hxlo[b].d = hx8[b].d;
+        for (int i = 0; i < QK / 8; ++i) {
+            uint32_t vh = 0, vl = 0;
+            for (int j = 0; j < 4; ++j) {
+                for (int half = 0; half < 2; ++half) {
+                    const int idx = i * 8 + j + 4 * half;
+                    const int q8 = hx8[b].qs[idx];
+                    // floor decomposition: l = q8 - 16*h lands in [-8, 7] for every integer q8, so no digit
+                    // ever needs clamping (rounding instead of flooring puts q8 = -8 at h = -1, l = +8).
+                    const int h = (q8 + 8) >> 4;
+                    const int l = q8 - 16 * h;
+                    if (h > 7 || h < -8 || l > 7 || l < -8) ++digit_clipped;
+                    vh |= (uint32_t) (h & 0xF) << (8 * j + 4 * half);
+                    vl |= (uint32_t) (l & 0xF) << (8 * j + 4 * half);
+                }
+            }
+            hxhi[b].q[i] = vh;
+            hxlo[b].q[i] = vl;
+        }
+    }
+    HIP_CHECK(hipMalloc(&g_xhi, hxhi.size() * sizeof(BlockQ4)));
+    HIP_CHECK(hipMemcpy(g_xhi, hxhi.data(), hxhi.size() * sizeof(BlockQ4), hipMemcpyHostToDevice));
+    HIP_CHECK(hipMalloc(&g_xlo, hxlo.size() * sizeof(BlockQ4)));
+    HIP_CHECK(hipMemcpy(g_xlo, hxlo.data(), hxlo.size() * sizeof(BlockQ4), hipMemcpyHostToDevice));
+    HIP_CHECK(hipMalloc(&g_xres, hxres.size() * sizeof(BlockQ4R)));
+    HIP_CHECK(hipMemcpy(g_xres, hxres.data(), hxres.size() * sizeof(BlockQ4R), hipMemcpyHostToDevice));
     HIP_CHECK(hipMalloc(&g_sx, hsx.size() * sizeof(int)));
     HIP_CHECK(hipMemcpy(g_sx, hsx.data(), hsx.size() * sizeof(int), hipMemcpyHostToDevice));
 
@@ -355,5 +510,22 @@ int main(int argc, char** argv) {
     std::printf("  dot8 : %8.4f ms   %7.1f G MAC/s   %4.0f dots/row   error vs FP32 %.3f %%\n", t8, macs / (t8 * 1e6),
                 (double) c.k / 8.0, e8 * 100.0);
     std::printf("  dot8 vs dp4a: %+.1f %% throughput\n", (t4 / t8 - 1.0) * 100.0);
+
+    // ---- the dial: dot8 plus the residual pass over 0/4, 1/4, 2/4, 4/4 of K
+    if (!std::getenv("DOT8_NO_DIAL")) {
+        std::printf("\n correction: residual r4 |mean| %.2f (of 8), clipped %d of %d\n", r_abs_mean, r_clipped, n_blk * QK);
+        std::printf("  %-22s %8s %8s %8s %8s\n", "arm", "ms", "G MAC/s", "vs dp4a", "error");
+        std::printf("  base-16 digits: clipped %d of %d\n", digit_clipped, n_blk * QK);
+        for (int corr : {0, 1, 2, 4, -2}) {
+            const double t = bench(true, c, dw2, dx4, dy, iters, corr);
+            const double e = error("corr");
+            if (corr == -2)
+                std::printf("  dot8 hi/lo (exact)  %8.4f %8.1f %+7.1f %% %7.3f %%\n", t, macs / (t * 1e6),
+                            (t4 / t - 1.0) * 100.0, e * 100.0);
+            else
+                std::printf("  dot8 + %d/4 correction %8.4f %8.1f %+7.1f %% %7.3f %%\n", corr, t, macs / (t * 1e6),
+                            (t4 / t - 1.0) * 100.0, e * 100.0);
+        }
+    }
     return 0;
 }

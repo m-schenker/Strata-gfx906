@@ -1,0 +1,10 @@
+# gfx906 kernel arm: NC5
+# native_expert_bench, /models/models/Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf layer 0, reference mode 0, median of 3
+ 8 x 1  all    80.2 us  gu    52.3 us  down    22.3 us   bitwise
+16 x 1  all   127.7 us  gu    90.9 us  down    40.0 us   bitwise
+16 x 2  all   147.3 us  gu    98.2 us  down    49.0 us   bitwise
+16 x 3  all   163.1 us  gu   110.5 us  down    53.1 us   bitwise
+16 x 4  all   179.6 us  gu   121.2 us  down    59.7 us   bitwise
+16 x 5  all   193.6 us  gu   135.1 us  down    61.5 us   bitwise
+16 x 6  all   298.9 us  gu   211.2 us  down    92.5 us   bitwise
+32 x 1  all   226.2 us  gu   164.3 us  down    64.6 us   bitwise

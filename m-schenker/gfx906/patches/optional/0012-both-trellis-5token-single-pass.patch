@@ -1,0 +1,120 @@
+# optional: a whole 5-token verify window in one pass over the weights
+#
+# Status: MEASURED, NOT APPLIED.  Read the numbers before taking it.
+#
+# The window.  `--spec 4` verifies 1 token plus whatever the drafter proposed, so a group (one expert, and the
+# tokens that picked it) holds up to 5 entries.  The kernels chunk a group GRP_NC = 4 entries at a time, so a
+# 5-entry group is paid as 4 + 1: the same weight row is streamed twice.  native_expert_bench on the real pack
+# (16 groups, median of 3, bitwise in every shape):
+#
+#          16 x 4 (one pass)   169.7 us
+#          16 x 5 (4 + 1)      258.4 us      +52 % for one more token
+#          16 x 6 (4 + 2)      288.1 us
+#
+# What this patch does.  The two staged trellis branches (gate/up and down) chunk by 5 instead of 4 and add an
+# `n == 5` case, so a 5-token window is a single pass.  Their staging buffers grow from GRP_NC * 80 * 9 to
+# 5 * 80 * 9 words (11.5 KB -> 14.4 KB of LDS per block in gate/up, 2.9 -> 3.6 KB in down).
+#
+# Measured (same harness, same card, bitwise in every shape):
+#
+#          16 x 1    115.0 -> 127.7 us    +11.0 %
+#          16 x 2    136.1 -> 147.3 us     +8.2 %
+#          16 x 3    152.5 -> 163.1 us     +7.0 %
+#          16 x 4    169.7 -> 179.6 us     +5.8 %
+#          16 x 5    258.4 -> 193.6 us    -25.1 %
+#          16 x 6    288.1 -> 298.9 us     +3.7 %
+#          32 x 1    206.0 -> 226.2 us     +9.8 %
+#
+# So the 5-token window is fixed and everything else pays for the bigger staging buffer - the gate/up kernel alone
+# goes 78.5 -> 90.9 us at 16 x 1, i.e. the LDS growth costs occupancy.  On a workload dominated by 2-4 token
+# windows that is a net regression, which is why it is not applied.
+#
+# Why it is still worth keeping.  It sizes the actual lever: the small-batch verify problem on this card is not
+# "wave64 lanes idle" - all 64 lanes are busy in these shapes - it is that the group chunking decides how many
+# times the weights are streamed.  The fix that gets both sides is a separate kernel for 5-entry groups, which can
+# carry the 14.4 KB staging buffer without taking it away from the 1-4 entry kernels (that is where the 6-11 % is
+# coming from).  That is a new kernel plus a launcher branch on the window size; this patch is the measurement
+# that says it has to be a separate kernel, not a template change.
+#
+diff --git a/src/kernels/cuda/iq_kernels.cu b/src/kernels/cuda/iq_kernels.cu
+index d329558..1c82fb2 100644
+--- a/src/kernels/cuda/iq_kernels.cu
++++ b/src/kernels/cuda/iq_kernels.cu
+@@ -2077,13 +2077,18 @@ __global__ void __launch_bounds__(256) native_gu_multi_kernel(const unsigned lon
+         // lane, which from global memory is what an extra entry costs on this card.  The same words, the same operations
+         // in the same order (row_dot_multi), so the same sums.
+         if (xb <= 80) {
+-            __shared__ uint32_t s_x[GRP_NC * 80 * 9];
++            // A verify window is 1 + the drafts accepted, so a group holds up to 5 entries per expert.  Chunking them
++            // NC_CHUNK at a time is what decides how many times the same weight row is read: with 4, a 5-token window
++            // is paid as 4 + 1 and the weights are streamed twice (native_expert_bench 16 x 4 = 169.7 us against
++            // 16 x 5 = 258.4 us).  5 makes it one pass.
++            constexpr int NC_CHUNK = 5;
++            __shared__ uint32_t s_x[NC_CHUNK * 80 * 9];
+             const block_q8_1* xs = reinterpret_cast<const block_q8_1*>(s_x);
+             for (int g = blockIdx.y; g < ng; g += gridDim.y) {
+                 const uint8_t* gp = (const uint8_t*) grp_ptr[g];
+                 const int e0 = grp_start[g], e1 = grp_start[g + 1];
+-                for (int e = e0; e < e1; e += GRP_NC) {
+-                    const int n = min(GRP_NC, e1 - e);
++                for (int e = e0; e < e1; e += NC_CHUNK) {
++                    const int n = min(NC_CHUNK, e1 - e);
+                     __syncthreads();
+                     for (int i = 0; i < n; ++i) {
+                         const uint32_t* src = reinterpret_cast<const uint32_t*>(xq + (size_t) ent_tok[e + i] * xb);
+@@ -2114,11 +2119,16 @@ __global__ void __launch_bounds__(256) native_gu_multi_kernel(const unsigned lon
+                             float s3[3];
+                             row_dot_multi<TG, 3, true, STAGE_GRID>(wr, xs, off3, 3, nb, lane, s3, s_grid);
+                             if (lane < 3) dst[(size_t) (e + lane) * L.n_ff + r] = s3[lane] * sc;
+-                        } else {
++                        } else if (n == 4) {
+                             const int off4[4] = { 0, xb, 2 * xb, 3 * xb };
+                             float s4[4];
+                             row_dot_multi<TG, 4, true, STAGE_GRID>(wr, xs, off4, 4, nb, lane, s4, s_grid);
+                             if (lane < 4) dst[(size_t) (e + lane) * L.n_ff + r] = s4[lane] * sc;
++                        } else {
++                            const int off5[5] = { 0, xb, 2 * xb, 3 * xb, 4 * xb };
++                            float s5[5];
++                            row_dot_multi<TG, 5, true, STAGE_GRID>(wr, xs, off5, 5, nb, lane, s5, s_grid);
++                            if (lane < 5) dst[(size_t) (e + lane) * L.n_ff + r] = s5[lane] * sc;
+                         }
+                     }
+                 }
+@@ -2248,7 +2258,7 @@ __global__ void __launch_bounds__(256) native_down_multi_kernel(const unsigned l
+     if (blockIdx.y >= ng) return;
+     STRATA_SHARED_ALIGN16_U32(s_grid_buf, IqGridWords<TD, STAGE_TQ>::value);   // the trellis codebook on a cc 6.0 card, else 4 unused words
+     const uint32_t* s_grid = stage_iq_grid<TD, STAGE_TQ>(s_grid_buf, threadIdx.x, 256);
+-    __shared__ uint32_t s_hq_buf[GRP_NC * 20 * 9];
++    __shared__ uint32_t s_hq_buf[5 * 20 * 9];   // 5: a whole verify window's entries in one pass (see the gu branch)
+     const int nb = (int) (L.n_ff / Fmt<TD>::qk), hb = (int) (L.n_ff / 32);
+     if constexpr (SUB_DOWN && kTqType<TD> && STAGE_TQ) {
+         // cc 6.0 trellis down rows (K = 40 dots at n_ff 640, the IQ4_NL row shape): 8 lanes a row, 32 rows a chunk, and a
+@@ -2261,8 +2271,8 @@ __global__ void __launch_bounds__(256) native_down_multi_kernel(const unsigned l
+                 const uint8_t* gp = (const uint8_t*) grp_ptr[g];
+                 const float sd = L.tail_off ? ((const float*) (grp_ptr[g] + L.tail_off))[2] : 1.0f;
+                 const int e0 = grp_start[g], e1 = grp_start[g + 1];
+-                for (int e = e0; e < e1; e += GRP_NC) {
+-                    const int n = min(GRP_NC, e1 - e);
++                for (int e = e0; e < e1; e += 5) {
++                    const int n = min(5, e1 - e);
+                     const uint32_t* src = reinterpret_cast<const uint32_t*>(hq + (size_t) e * 20);
+                     const int words = n * (20 * 9);
+                     __syncthreads();
+@@ -2378,11 +2388,16 @@ __global__ void __launch_bounds__(256) native_down_multi_kernel(const unsigned l
+                             float s3[3];
+                             row_dot_20_sub16<TD, 3, true>(wr, s_hq, off3, 3, t, s3);
+                             if (t < 3) out[(size_t) ent_dst[e + t] * L.n_embd + r] = s3[t] * sd;
+-                        } else {
++                        } else if (n == 4) {
+                             const int off4[4] = { 0, 20, 40, 60 };
+                             float s4[4];
+                             row_dot_20_sub16<TD, 4, true>(wr, s_hq, off4, 4, t, s4);
+                             if (t < 4) out[(size_t) ent_dst[e + t] * L.n_embd + r] = s4[t] * sd;
++                        } else {
++                            const int off5[5] = { 0, 20, 40, 60, 80 };
++                            float s5[5];
++                            row_dot_20_sub16<TD, 5, true>(wr, s_hq, off5, 5, t, s5);
++                            if (t < 5) out[(size_t) ent_dst[e + t] * L.n_embd + r] = s5[t] * sd;
+                         }
+                     }
+                 }

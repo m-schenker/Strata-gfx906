@@ -22,7 +22,7 @@ out=$repo/bench/results/gfx906-kernel-$label.txt
 mkdir -p "$repo/bench/results"
 
 # shape: groups x tokens (a decode step's expert call: 8-32 groups, 1..4 tokens each)
-shapes=("8 1" "16 1" "16 2" "16 4" "32 1")
+shapes=("8 1" "16 1" "16 2" "16 3" "16 4" "16 5" "16 6" "32 1")
 
 run() {  # run <groups> <tokens> -> "all gu down" medians of 3, plus the parity verdict
     local g=$1 t=$2
