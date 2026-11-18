@@ -70,8 +70,8 @@ because the project's own spill gate cannot see a HIP object.
 - **R4 — card exclusivity.** Nothing else on the GPU during a round: stop the quadlet (`systemctl --user stop
   llama-rocm-docker`), no coding agent on the engine, `rocm-smi` idle, and the stall watcher running
   (`mi50-port/files/bench/mi50_stall_watch.py`).
-- **R5 — clock policy.** Measurements at `rocm-smi --setperflevel high` if the user allows root for it (open question
-  Q4); otherwise every round records the observed `sclk` and we accept the noise, noting it.
+- **R5 — clock policy.** Clocks are pinned (`rocm-smi --setperflevel high`, done on the host). Every round still
+  records the observed `sclk` so a round taken at a different clock is never compared against the others.
 - **R6 — artifacts.** Every round writes `bench/results/<date>-mi50-<arm>/{README.md,results.json,engine-log.txt,hoststate.txt}`
   so a number can never be quoted without its provenance.
 
@@ -90,6 +90,12 @@ because the project's own spill gate cannot see a HIP object.
       `dense.bin`, `mtp/rt`). Both trees write/read v3+v5 with the same column layout, so this *should* work; if the
       engine refuses, rebuild only the pack from the GGUF already on disk (`tools/iq_pack.py`, no 92 GB download) and
       record what changed. Escalate before re-downloading anything.
+- [x] **P0-4a** *(done — the 0.2.1 reference)* Current engine (`llama-rocm-docker:0.3`, through llama-swap on
+      `:11434`), one 3-run suite, clocks pinned: **chat decode 36.3 tok/s** (30.4–48.1, n=9), **4K prompt 392.3 tok/s**
+      (338.9–437.5), **16K prompt 386.7 tok/s** (315.3–393.0), **agent decode 37.7 tok/s** (33.5–42.0, n=15, ~14.5k
+      prompt depth), agent cache hit 70.6 %, agent turn first token 10.15 s (6.83–14.49). Results:
+      `bench/results/2026-11-18-community-2x-n-a-model/`. The spread is the machine, not noise to be averaged away —
+      every later arm is compared against *this* folder, and an arm has to beat the range, not the median.
 - [ ] **P0-4** Re-measure a **fork baseline** and write it as `bench/results/mi50-baseline-fork-0.2.15`:
       decode tok/s at 0 / 8k / 18k depth (greedy, 128 tok), prompt read tok/s at 512 / 8K / 17K, 2 slots. Also run
       the *same* suite against today's `llama-rocm-docker:0.3` engine so we know whether the fork is ahead or behind
@@ -98,6 +104,20 @@ because the project's own spill gate cannot see a HIP object.
 - [ ] **P0-5** Port the round harness from the working install into the fork tree (`bench/mi50_round.sh`,
       `mi50_round_run.sh`, `mi50_live_ab.py`, `mi50_stall_watch.py` from `llama-rocm-docker/mi50-port/files/bench/`)
       and make `--config` point at the fork's run config. This is mechanical, and it is what makes 40 rounds cheap.
+- [ ] **P0-8** **The dev loop, so a kernel change costs seconds and not 15 minutes.** The image build compiles
+      `strata`/`strata-dsv41`/`strata-device` only, but the tree already carries the harness the kernel work needs:
+      `src/kernels/native_expert_bench.cpp` (README: "the grouped native experts on real GGUF rows: one AMD layout
+      against another, bit for bit, and each one's time", `native_expert_bench <shard.gguf> <layer> <groups> <tokens>
+      <ref mode> <mode>`). It is built for gfx906 (`STRATA_ENABLE_CUDA` is forced on by the HIP gfx906 toolchain), it
+      takes the real `Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf` and a layer number, and it compares two `STRATA_EXP_MODE`
+      values bitwise before it reports their times. Plan: a `--target builder` image kept as `strata-gfx906:dev` with
+      `/build` warm, a bind mount of this checkout at `/work`, `ninja strata native_expert_bench
+      native_expert_parity`, and GPU access (`--device /dev/kfd --device /dev/dri`). Kernel-level arms run there;
+      only arms that survive the micro-bench get a 15-minute end-to-end round.
+- [ ] **P0-9** Bench plumbing that the proxy case needs (done in this branch, `tools/strata_bench.py`): `--model NAME`
+      (a Strata server ignores the name, llama-swap routes on it) and `--force` (a server that does not answer
+      `/health` with `"service":"strata"` — i.e. any proxy). Plus `bench/gfx906_arm.py`: one arm = one config file
+      (`tuning/arm-<name>.json`, env block included) + one suite run + a comparison against `baseline`.
 - [ ] **P0-6** **Build a HIP spill/occupancy reader** (the fork's `check_cuda_spills.py` cannot see a HIP object).
       Read the code-object metadata per kernel out of the built libraries:
       `llvm-readobj --amdhsa-code-object-metadata` (or `roc-obj-ls`/`roc-obj-extract` from the TheRock tree) →
@@ -235,27 +255,29 @@ Gyro-M's 144 routed-expert tensors are TQ2_T on both projections, and decode is 
       tree outside it), each independently reviewable, each saying what it costs when off.
 - [ ] **P10-3** Open the PR against `m-schenker/Strata-gfx906:main` from `gfx906-kernel-tuning`, with the numbers in
       the description.
-- [ ] **P10-4** Leave the machine in the state the user wants: quadlet restarted on `llama-rocm-docker:0.3` as the
-      known-good fallback, or pointed at a new image if the fork wins — user's call (Q1).
+- [ ] **P10-4** Leave the machine serving: the engine from this branch behind its own OpenAI endpoint (Q1), with
+      `llama-rocm-docker:0.3` still present as the known-good fallback and the quadlet restartable by hand.
 
 ---
 
-## 14. Open questions — need answers before P0-1
+## 14. Decisions (answered by the user before P0-1)
 
-- **Q1 — end state.** After the run, should this box go back to `llama-rocm-docker:0.3` (0.2.1 + mi50-port), or should
-  the quadlet be switched to the fork's image if it wins on both parity and speed?
-- **Q2 — downtime budget.** Stopping the quadlet takes the model offline (it is also what the agent itself may be
-  using). Builds are 1–2 h; a measurement round is 5–15 min; the full plan is ~2–3 days of rounds. Is the box
-  exclusively ours, and are there hours to avoid?
-- **Q3 — disk.** We have 114 GB free. The fork image + TheRock tree wants ~25–40 GB, on top of the 95 GB of existing
-  model data. OK to prune the `0.2` image and build cache? (We keep `0.3`.)
-- **Q4 — clock pinning.** `rocm-smi --setperflevel high` needs root and raises power/heat; it makes numbers comparable
-  across rounds. Allowed, or measure at default clocks and record them?
-- **Q5 — scope of "optimize".** Is a *token-identical but not bitwise-identical* prompt path (`STRATA_HIP_PROMPT_F16`)
-  acceptable if it is the big prefill win? Current rule (R2) says yes, labelled; confirm.
-- **Q6 — model scope.** Only the Gyro-M / TQ2_T path (what this box serves), or should the changes stay generic enough
-  for other gfx906 users' packs (IQ types, Q4_K)? Affects how P3/P5 are written (generic `if constexpr` vs a special
-  case).
+- **Q1 — end state: the fork engine's own OpenAI-compatible endpoint, no llama-swap.** The engine serves on one port
+  with `/v1/chat/completions`; that *is* the deliverable on this box. Nothing has to be wired back into the quadlet for
+  the work to be usable.
+- **Q2 — the box is ours: take the quadlet down.** No hours to avoid; the model goes offline for the duration.
+- **Q3 — pruning allowed** (`:0.2` image and the podman build cache are gone; `llama-rocm-docker:0.3` is kept as the
+  known-good fallback).
+- **Q4 — clocks are already pinned** (`rocm-smi --setperflevel high` done by the user); every round still records the
+  observed `sclk`, but no root work is needed per round.
+- **Q5 — token-identical but not bitwise-identical is acceptable** for the prompt path (`STRATA_HIP_PROMPT_F16`) and
+  for any change that only reorders float sums, provided the results doc labels which path produced which number.
+- **Q6 — the changes must stay generic.** This box is the *test bed* (one MI50, VRAM-limited, so the Gyro-M / TQ2_T
+  model is what we measure on), but the code must not special-case Gyro-M: it is meant to be used on a 4× MI50 box as
+  well. Concretely, P3/P5 gate on *format class and wave64 shape* (`if constexpr` over the trellis types, a wave64
+  row geometry that any pack can take), never on "this model's tensor list"; a gfx906 win that only works for
+  `n_ff == 640` is out. Where a lever is only safe for one format, it goes behind a documented default-off switch,
+  the way `STRATA_HIP_ROUTER_FAST` does.
 
 ---
 
