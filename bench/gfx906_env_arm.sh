@@ -19,6 +19,8 @@
 #   EXTRA_ENV='A=1 B=2'                               variables every arm also gets
 #   ENGINE_ENV='EXPERT_CACHE=18000 ...'               the serving settings (see the comment block below)
 #   PODMAN=podman                                     or docker
+#   ENGINE_BIN=/path/to/strata                        measure a binary built here instead of the one in the image
+#   GPU=0,1,2,3                                       every card, for a multi-GPU arm
 #
 # The suite is tools/strata_bench.py over HTTP (--url), so the numbers come from the engine's own timings.  Results go to
 # bench/results/<date>-<gpu>-<model>/ ; the first arm should be named `baseline` and later arms are compared against it.
@@ -57,11 +59,24 @@ say() { printf '%s\n' "$*"; }
 say "arm $name: ${*:-<no change>}"
 
 "$PODMAN" rm -f "$CT" >/dev/null 2>&1
-"$PODMAN" run -d --name "$CT" \
-  --device /dev/kfd --device /dev/dri --security-opt label=disable -p "$PORT:$PORT" \
-  -v "$MODELS_DIR":/models:ro -v "$PACK_DIR":/data/packs/default:ro -v "$MTP_DIR":/data/mtp/rt:ro \
-  -v "$DATA_DIR":/data \
-  "${envargs[@]}" "$IMAGE" serve >/dev/null || { say "container did not start"; exit 1; }
+if [ -n "${ENGINE_BIN:-}" ]; then
+    # create, drop the binary in, start: `podman restart` on a container whose entrypoint is already running the old
+    # binary is a race, and a copy into a running container is not seen by the process
+    "$PODMAN" create --name "$CT" \
+      --device /dev/kfd --device /dev/dri --security-opt label=disable -p "$PORT:$PORT" \
+      -v "$MODELS_DIR":/models:ro -v "$PACK_DIR":/data/packs/default:ro -v "$MTP_DIR":/data/mtp/rt:ro \
+      -v "$DATA_DIR":/data \
+      "${envargs[@]}" "$IMAGE" serve >/dev/null || { say "container did not start"; exit 1; }
+    "$PODMAN" cp "$ENGINE_BIN" "$CT":/opt/strata/engine/strata || { say "could not copy $ENGINE_BIN in"; exit 1; }
+    say "engine: $ENGINE_BIN ($(md5sum "$ENGINE_BIN" | cut -c1-12))"
+    "$PODMAN" start "$CT" >/dev/null || { say "container did not start"; exit 1; }
+else
+    "$PODMAN" run -d --name "$CT" \
+      --device /dev/kfd --device /dev/dri --security-opt label=disable -p "$PORT:$PORT" \
+      -v "$MODELS_DIR":/models:ro -v "$PACK_DIR":/data/packs/default:ro -v "$MTP_DIR":/data/mtp/rt:ro \
+      -v "$DATA_DIR":/data \
+      "${envargs[@]}" "$IMAGE" serve >/dev/null || { say "container did not start"; exit 1; }
+fi
 
 keyfile=$DATA_DIR/state/api-key
 for i in $(seq 1 90); do                      # the first start loads or reads 92 GB: give it 15 minutes
