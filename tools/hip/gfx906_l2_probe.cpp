@@ -2,7 +2,7 @@
 //
 //     clang++ -x hip --offload-arch=gfx906 --rocm-path=/opt/rocm -O3 -o l2 gfx906_l2_probe.cpp && ./l2
 //
-// The question: decode re-reads the same few experts every token, so if the hot set fit the 4 MiB L2 - or if a
+// The question: decode re-reads the same few experts every token, so if the hot set fit the L2 (8 MiB on MI50) - or if a
 // persisting-cache window could pin it - the expert GEMV would run at L2 speed instead of HBM speed.  This tool
 // answers it in two parts:
 //   1. what the HIP surface exposes for L2 residency on this card (attribute sizes, whether an access-policy window
@@ -97,7 +97,7 @@ int main() {
         std::printf(" %6.1f MiB  %5d  %7.4f  %6.1f\n", mb, rows, ms, (rows * (double) k * 4.0) / (worst * 1e6));
         HIP_CHECK(hipFree(w));
     }
-    std::printf("\n the engine's decode hot set: 10 of 512 experts per layer x 1.31 MB = 13.1 MB per layer,\n"
-                " and 48 layers are live per token - the 4 MiB L2 holds a fifth of one layer's picks.\n");
+    std::printf("\n the engine's decode hot set: 10 of 512 experts per layer x 1.31 MB = 13.1 MB per layer, and 48\n"
+                " layers are live per token - the 8 MiB L2 covers about 60 %% of ONE layer's picks.\n");
     return 0;
 }

@@ -68,10 +68,13 @@ before=$(ls -1dt "$repo"/bench/results/*/ 2>/dev/null | head -1)
 ENGINE_BIN=$bin "$here/gfx906_env_arm.sh" "$name" || rc=$?
 after=$(ls -1dt "$repo"/bench/results/*/ 2>/dev/null | head -1)
 if [ -n "$after" ] && [ "$after" != "$before" ]; then
-    rm -rf "$repo/bench/results/matrix-$name"
-    mv "$after" "$repo/bench/results/matrix-$name"
-    cp "$repo/run/logs/arm-$name.log" "$repo/bench/logs/matrix-$name.log" 2>/dev/null
-    say "results: bench/results/matrix-$name"
+    # never overwrite: an existing matrix-<name> may be *committed* evidence (this script used to rm -rf it, which
+    # deletes a tracked result folder the first time anyone re-runs an arm with the same name)
+    dest=$repo/bench/results/matrix-$name
+    [ -e "$dest" ] && dest=$dest-$(date +%Y%m%d-%H%M%S)
+    mv "$after" "$dest"
+    cp "$repo/run/logs/arm-$name.log" "$dest/engine.log" 2>/dev/null
+    say "results: ${dest#$repo/}"
 fi
 say "arm $name done (rc $rc)"
 exit "$rc"

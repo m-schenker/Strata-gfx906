@@ -146,7 +146,9 @@ bench/gfx906_patch_matrix.sh all        0003 0004 0005 0007 0008 0009
 ```
 
 Run the whole list per model per card count: `GPU=0` with IQ4_XS, `GPU=0` with Q8, `GPU=0,1,2,3` with each. That is
-6 arms × 4 = 24 suite runs; at ~10 minutes each that is an afternoon, and it is the job. On this box the `baseline` arm
+6 arms × 4 = 24 suite runs. Budget **25-35 minutes per round** for a large IQ4_XS model on one card (this branch's box
+does a round in ~10 minutes with a 92 GB TQ2_T model and a warm page cache) — on a big model with a cold cache it is an
+afternoon per model, and it is the job. On this box the `baseline` arm
 reproduced the fork's bare numbers (chat decode 42.3 against the branch's recorded 41.9, 4K prompt 224.6 against 232.3,
 16K 321.9 against 323.3), which is the sanity check to run first on yours: **if your `baseline` does not reproduce the
 fork's own numbers, fix that before measuring any patch.**
@@ -250,14 +252,20 @@ so ask before spending a round on it. If you get a yes: integrate per `DOT8-KIT.
 style blocks, the trellis row-dot becomes a dot8 row-dot, `STRATA_DOT8=1` gates it, and the gate order puts it after
 the format check.
 
-**Route B — decode the IQ4_XS codebook into value digits.** The kernel already turns a nibble into an int8 value with a
+**Route B — decode the IQ4_XS codebook into value digits.** *Closed by the 4x MI50 round, with numbers: a codebook
+value is 8-bit, so the exact decomposition needs **four** dot8 passes (not two), which is dp4a's cost at best before the
+per-value table lookups — see `DOT8-KIT.md` §3b. Kept here because knowing why it fails is worth more than the failed
+attempt.* The kernel already turns a nibble into an int8 value with a
 16-entry table lookup. Split that value into two 4-bit digits *in the table* (two more 16-entry tables, or one table of
 two nibbles) and dot8 twice. The count is then: 2 dot8 per 8 values = **the same instruction count as dp4a**, with a
 table lookup per value instead of per two values — i.e. plausibly *slower*. Measure it (an hour of work with the kit's
 harness), because "plausibly slower" is not a measurement, but expect to close it with a number rather than an
 argument.
 
-**Route C — codebook linearisation** (speculative; kill it cheaply or not at all). If the 16 codebook values were close
+**Route C — codebook linearisation.** *Closed by the 4x MI50 round: best linear fit of the 16 values is
+`c(i) ≈ -114.713 + 14.512·i` (residual 9.2 % of the codebook's spread), and the linearised reconstruction measures
+13.55 % relative RMS against the current 7.87 % on real weights — 1.72x worse. Numbers in `DOT8-KIT.md` §3b.* Kept here
+as the shape of the argument: this is what killing a speculative route in ten minutes looks like. If the 16 codebook values were close
 to `c0 + c1·idx`, then `w·a = c0·Σa + c1·Σ(idx·a)`, and `Σa` is precomputable while `Σ(idx·a)` is **one** dot8 pass
 (index and activation both 4-bit) — 320 instructions for a full dot. The gate is the fit quality: compute the RMS of
 the best linear fit of `kvalues_iq4nl` and compare it against the quantisation error the model already has. The 16
@@ -313,6 +321,15 @@ Put the 5-entry path in **its own kernel** so the 1-4 entry kernels keep their 1
 5. If your model is IQ4_XS, the same cliff may exist there for a different reason (`row_dot_multi` with a different
    codebook). Measure the 3/5/6-token shapes on *your* pack first: `bench/gfx906_kernel_bench.sh` already has them.
 
+## 4.2b If your pack is IQ (not trellis), the kernels are different ones
+
+The 4x MI50 round measured the same cliff on IQ4_XS (**+59 %** for a fifth token, 245.9 → 389.9 µs at 16 groups) and
+found that `optional/0012` cannot help it: an IQ pack runs `native_gu_lds_kernel` (`iq_kernels.cu:5914`) and
+`native_down_lds_kernel` (:6674), which are *different kernels* from the multi/lds branches `optional/0012` touches. So
+for IQ the job is: add the `n == 5` case and the 5-entry staging to those two kernels (two branches each), pass 5 entries
+per group from the launcher, and check the hash. A first attempt that only added the case elsewhere was bitwise and
+**neutral** (389.9 stayed 389.9), which is exactly what "wrong branch" looks like.
+
 ## 4.3 Watch out for
 
 - **LDS budget per block**: 5 entries × 80 blocks × 9 words = 14.4 KB in gate/up, 3.6 KB in down. On gfx906 (64 KiB
@@ -365,7 +382,7 @@ card count, keep/neutral/drop), the re-tuned rocBLAS table's provenance, and the
 | SELinux on a bind mount | `error reading 'x.cpp': Permission denied` / odd HSA aborts | `--security-opt label=disable` (or `:z`) on every container volume |
 | the TG probe's first rep | 20-45 tok/s cold, then 60-110 | discard the first rep, or warm the prompt first (the probe does) |
 | PP numbers across cache states | a "392 tok/s" figure that was a warm page cache | only compare in-condition; your four cards will change this entirely |
-| `GRP_NC` in `iq_kernels.cu` | changing it silently drops entries in ten other dispatch sites | chunk locally, never the constant |
+| `GRP_NC` in `iq_kernels.cu` | changing it silently drops entries in ten other dispatch sites; on a real pack the 4x MI50 round measured a **36 % "win" at 16x5 with a different output hash** | chunk locally, never the constant — and if a 5-token number looks too good, check the hash first |
 
 ---
 

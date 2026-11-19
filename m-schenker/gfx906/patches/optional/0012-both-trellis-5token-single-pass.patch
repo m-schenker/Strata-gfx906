@@ -29,6 +29,12 @@
 # goes 78.5 -> 90.9 us at 16 x 1, i.e. the LDS growth costs occupancy.  On a workload dominated by 2-4 token
 # windows that is a net regression, which is why it is not applied.
 #
+# NOT TRELLIS-SPECIFIC.  A 4x MI50 box measured the same cliff on IQ4_XS (IQ3_S gate/up, IQ4_NL down): 16x5 costs
+# +59 % over 16x4 (245.9 -> 389.9 us).  That pack runs native_gu_lds_kernel / native_down_lds_kernel, which are
+# different kernels from the branches this patch touches, so a 5-entry case added there is required too.  And
+# GRP_NC = 5 on its own is INVALID: the n == 4 fallback silently drops the fifth entry (16x5 "improves" 36 % and the
+# output hash changes).  Never change the constant; chunk locally, per branch.
+#
 # Why it is still worth keeping.  It sizes the actual lever: the small-batch verify problem on this card is not
 # "wave64 lanes idle" - all 64 lanes are busy in these shapes - it is that the group chunking decides how many
 # times the weights are streamed.  The fix that gets both sides is a separate kernel for 5-entry groups, which can

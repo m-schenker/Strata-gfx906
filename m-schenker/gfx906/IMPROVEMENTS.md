@@ -30,7 +30,9 @@ kernel level only. §7 has every round-2 result and the keep/drop call for each.
 
 ## 1. `0005-both-gfx906-trellis-lds-codebook-default.patch` — the trellis codebook lives in LDS
 
-**The biggest single win on this card: +26 % TG.**
+**The biggest single win on this card: +26 % TG — for the trellis expert formats (quant types 144/145/146) only.**
+Nothing else can fire: the staging switch is inside the trellis row-dot, so on an IQ4_XS/IQ3_S/IQ4_NL/Q8_0 pack this
+patch is inert by construction, and a 4x MI50 box measured exactly that (§12).
 
 ### What changed
 
@@ -551,6 +553,13 @@ A 5-token window costs **+52 % over a 4-token one for 25 % more tokens**, becaus
 `GRP_NC = 4` and paid as 4 + 1: the weight row is streamed twice. That is the real content of the "small-batch verify"
 problem on this card — all 64 lanes are already busy; what is wrong is the number of times the weights are read.
 
+**It is not a trellis property** (§12): on IQ4_XS (IQ3_S gate/up, IQ4_NL down) the same `GRP_NC = 4` chunking gives
+**+59 %** for a fifth token (16 groups: 245.9 → 389.9 µs; gate/up 188.0 → 300.8). So the follow-up is bigger than this
+section first said: for an IQ pack the 5-entry path belongs in `native_gu_lds_kernel` (`iq_kernels.cu:5914`) and
+`native_down_lds_kernel` (:6674), which are different kernels from the trellis branches `optional/0012` touches, and it
+needs a launcher that passes 5 entries per group. And `GRP_NC = 5` on its own is **not** a fix: the `n == 4` fallback
+drops the fifth entry, which shows up as a 36 % "win" with a different output hash (`bench/experiments/verify-window-5/`).
+
 `patches/optional/0012` chunks by 5 and adds the `n == 5` case, so the window is one pass: **16 × 5 goes 258.4 →
 193.6 µs (−25 %)**, bitwise. But the staging buffer grows 11.5 → 14.4 KB of LDS, and everything else pays for it:
 16 × 1 +11 %, 16 × 2 +8 %, 16 × 3 +7 %, 16 × 4 +6 %, 32 × 1 +10 %. On a workload dominated by 2-4 token windows that is
@@ -579,7 +588,28 @@ format — on IQ4_XS, 16 groups × 5 tokens costs **+59 %** over 4 tokens.  A 5-
 `native_gu_lds_kernel` / `native_down_lds_kernel` as well (the kernels an IQ pack runs), and `GRP_NC = 5` on its own is
 **not** a fix: it silently drops the fifth entry (`bench/experiments/verify-window-5/`).
 
-**Environment note:** the 0.2.15 engine wedges the GPU at kernel-module load on MI50 with a 200 K context
+**The scope, in one table.**  What each shipped patch can fire on, which is what a reader has to know before they
+expect any of §1's numbers:
+
+| format of the routed experts | `0005` | `0007` | `0008` | `0009` | `0003`/`0004` |
+|---|---|---|---|---|---|
+| TQ2_T / TQK6 / TQK7 (types 144-146) | **fires** (+26 % decode) | fires | fires | fires | fires |
+| IQ4_XS / IQ3_S / IQ4_NL / IQ2_* | no (codebook indices) | no | no | fires | fires |
+| Q8_0 / Q6_K | no | no | no | fires | fires |
+
+measured as: eight binaries (baseline, one per patch, all), eight shapes, **identical FNV hash per shape and every delta
+inside ±1.3 %** on IQ4_XS.  A patch that cannot fire is inert, which is the only acceptable outcome for it: it must not
+be *slow* on the formats it does not serve.
+
+**Environment note:** this box's engine (not this branch's patches - the same host has been unstable with engines that
+contain none of them) wedges the GPU at kernel-module load on MI50 with a 200 K context
 (`hsa_executable_freeze` → `InvalidateCodeCaches` → `ExecutePM4` never returns, both TheRock 10.3 and ROCm 7.1.1), so
 no suite round was obtainable here.  `STRATA_WINDOW_WARM=0`, `--lookup-max-t 0` and ≤32 K context let one request
 through.  See `bench/results/2026-11-19-4xmi50-iq4xs/engine-hang-0.2.15.txt`.
+
+**Build portability (`patches/0010`).**  That round also had to build the branch against a distro ROCm (clang 20), where
+`__shared__ alignas(16) int4 x[]` is rejected in the two expdec kernels.  Swapping the two specifiers
+(`alignas(16) __shared__ int4 x[]`) is accepted by clang 20, by this box's clang 24 and by nvcc, with the same alignment
+and the same code object — so it is now applied rather than optional.  Measured on this card with the patch in:
+`native_expert_bench` bitwise in every shape, 16×1 118.1 µs against 115.0, 16×4 169.5 against 169.7, 16×5 262.4 against
+258.4 — inside the run-to-run band, i.e. no performance claim either way.

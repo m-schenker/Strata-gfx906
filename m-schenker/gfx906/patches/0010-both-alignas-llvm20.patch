@@ -1,8 +1,9 @@
-# backend: both (kernels shared; a compiler-portability fix, no behaviour change).
-# clang 20 (ROCm 7.1.1) rejects `__shared__ alignas(16) int4 x[]` - "alignas attribute cannot be applied to
-# types" - in the two expdec kernels; TheRock 10.3's clang accepts it.  `alignas(16) __shared__ int4 x[]` is
-# accepted by both, and the alignment is identical, so the code objects are the same.
-# Needed to build the branch on a distro-ROCm box (the 4x MI50 validation in ROUND4-4XMI50.md built this way).
+# backend: both (kernels shared; a compiler-portability fix, no behaviour change and no performance claim).
+# clang 20 (distro ROCm 7.1.1 / the ROCm in most distro repos) rejects `__shared__ alignas(16) int4 x[]` in the two
+# expdec kernels with "alignas attribute cannot be applied to types"; TheRock 10.3 (clang 24 here) accepts both forms.
+# `alignas(16) __shared__ int4 x[]` is accepted by clang 20, by clang 24 and by nvcc, the alignment is identical and the
+# code object is the same, so applying it costs nothing and lets the branch build on a distro-ROCm box.  Verified here by
+# building native_expert_bench with the patch applied (clang 24, no new warnings) and on a clang-20 box (ROUND4-4XMI50).
 diff --git a/src/kernels/cuda/iq_kernels.cu b/src/kernels/cuda/iq_kernels.cu
 index d329558..e8c6f7a 100644
 --- a/src/kernels/cuda/iq_kernels.cu

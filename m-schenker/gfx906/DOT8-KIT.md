@@ -57,6 +57,39 @@ A bigger machine is interesting for two reasons beyond raw speed: with more expe
 falls in the range where dot8 pays most (16), and with a Q4 model the *end-to-end* number becomes measurable — which is
 the only number that decides whether the 4-bit activation cost is acceptable.
 
+## 3b. An independent dataset, and two routes closed (4x MI50 box, IQ4_XS + Q8)
+
+A second box had **no Q4_0 tensor at all** (its models are IQ4_XS and Q8_0, whose nibbles are codebook indices), so it
+manufactured one: `tools/hip/gfx906_make_q4_0.py <q8.gguf> output.weight 20480 out.gguf` dequantises rows of the Q8_0
+`output.weight` and requantises them with ggml's own rule (`d = max/-8`, offset-binary nibbles) into a one-tensor GGUF.
+Same tensor, same model, no download. It reproduces this box's table:
+
+| groups | dp4a | dot8 | gain | err dp4a | err dot8 | dot8 hi/lo (exact) |
+|---|---|---|---|---|---|---|
+| 8 | 0.0343 ms | 0.0198 ms | +73 % | 0.552 % | 9.378 % | 0.0309 ms · **0.552 %** |
+| 16 | 0.0887 ms | 0.0361 ms | +146 % | 0.556 % | 8.928 % | 0.0432 ms · **0.556 %** |
+| 32 | 0.1075 ms | 0.0698 ms | +54 % | 0.554 % | 9.549 % | 0.0779 ms · **0.554 %** |
+
+Times agree with §3 to 1-4 %, and the **errors agree to three decimals** — including the claim that matters most: the
+hi/lo arm's error is *identical* to dp4a's on every shape. The one difference is the 8-group shape, where that box sees
++73 % against this box's wash: at 8 groups the working set (G × 640 rows × 1.44 KB) is small enough to sit in L2, so the
+answer there is a property of the footprint, not of the instruction. Do not quote the 8-group number without the
+footprint.
+
+That box also closed the two remaining routes, with numbers rather than arguments:
+
+- **Route B (decode the index codebook, then dot8 the decoded values) — closed.** The split is exact (verified: `16h+l`
+  reproduces all 16 entries of `kvalues_iq4nl`), but a codebook value is **8-bit**, so `(16h_w+l_w)·(16h_a+l_a)` needs
+  **four** 4-bit×4-bit passes, not two. Bound from the measured 2-pass cost: 4 passes ≈ 0.086 ms at 16 groups against
+  dp4a's 0.0887 — parity at best, before the per-value table lookups, and 1.8x slower at 8 groups.
+- **Route C (linearise the codebook: `w·a = c0·Σa + c1·Σ(idx·a)`) — closed.** Best linear fit of the 16 values is
+  `c(i) ≈ -114.713 + 14.512·i` with a residual of 9.2 % of the codebook's own spread (the steps run 11…24, twice as
+  steep at the ends). Measured on real weights (`blk.0.ffn_down_exps.weight`, 12.8 M values, Q8_0 as reference): the
+  linearised reconstruction costs **13.55 %** relative RMS against the current `d·c[idx]`'s **7.87 %**, i.e. 1.72x worse.
+
+So for **index** formats — IQ4_XS, IQ4_NL, IQ2_*, and this branch's trellis types — dot8 has no route left: the only
+remaining case is a format whose nibbles are already values. That is what §4 integrates, and Q4_0/Q4_1/Q4_K are it.
+
 ## 4. What the integration looks like (sized, not guessed)
 
 When the numbers come back, this is the work, in order:

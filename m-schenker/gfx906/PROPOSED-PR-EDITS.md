@@ -1,4 +1,14 @@
-# PR #1 — proposed edits (written from the 4× MI50 round; nothing here is applied to the PR body)
+# PR #1 — proposed edits (written from the 4× MI50 round)
+
+> **Status, 2026-11-20 — applied by the branch owner, with two exceptions.**  A (scope/title), B (patch verdicts,
+> version-pinned tables), C.1/C.2/C.3/C.4/C.5/C.6/C.7, E.1/E.3/E.4/E.5 are in the PR body, `IMPROVEMENTS.md`,
+> `DOT8-KIT.md`, `HANDOVER-4XMI50.md`, `patches/README.md` and `tools/hip/gfx906_l2_probe.cpp`.  `optional/0013` moved
+> to `patches/0010` because it makes the branch build on clang 20 as well as clang 24, and it measured neutral here.
+> F (tarball sha256, `--format docker`, the suite's machine label) is open.  **D is declined as a PR finding**: that
+> host's instability predates this branch and reproduces with engines that contain none of its patches, so it belongs in
+> the round-4 report (where it is) rather than in the PR as a property of this work — the PR carries one line saying the
+> suite round there was not obtainable, and the numbers it does carry are kernel-level.  Everything below is kept
+> unedited as the review it is.
 
 Base: `xXPOLYGONXx/Strata-gfx906` @ `gfx906-kernel-tuning`, head `d1cd1399` (draft, 14 commits).
 Evidence: `ROUND4-4XMI50.md` (this folder) and `bench/results/2026-11-19-4xmi50-iq4xs/`, measured on 4× MI50 with

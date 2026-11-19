@@ -1,0 +1,10 @@
+# gfx906 kernel arm: alignas
+# native_expert_bench, /models/models/Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf layer 0, reference mode 0, median of 3
+ 8 x 1  all    71.9 us  gu    52.1 us  down    24.9 us   bitwise
+16 x 1  all   118.1 us  gu    78.2 us  down    39.3 us   bitwise
+16 x 2  all   133.1 us  gu    87.7 us  down    48.6 us   bitwise
+16 x 3  all   151.8 us  gu    98.3 us  down    52.8 us   bitwise
+16 x 4  all   169.5 us  gu   114.0 us  down    57.5 us   bitwise
+16 x 5  all   262.4 us  gu   178.0 us  down    92.2 us   bitwise
+16 x 6  all   278.4 us  gu   191.6 us  down    99.8 us   bitwise
+32 x 1  all   197.3 us  gu   138.2 us  down    62.8 us   bitwise
