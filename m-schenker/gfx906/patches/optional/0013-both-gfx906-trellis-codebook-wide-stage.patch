@@ -23,6 +23,12 @@
 # own (the staging pass is one per block against ~80 dot calls per row), but it is a strict instruction reduction with no
 # regression in nine of ten runs and no numerics change, so it is shipped rather than queued.
 #
+# Status: NOT APPLIED - measured evidence, moved out of the applied set.
+# It was applied for a while and is harmless (a copy, so it cannot change results): 9 of the branch's 10
+# native_expert_bench runs came back 4-7 us faster on the trellis row-dot (16x1 118.8 -> 115.7 us).  It was moved
+# here because no end-to-end effect was ever measured and the branch's keep rule wants a config-level number or a
+# much larger kernel one; a reviewer should not have to hold a -4 % kernel claim that the suite cannot see.
+# Numbers and method: IMPROVEMENTS.md section 4, MEASUREMENT-LEDGER.md.
 diff --git a/src/kernels/cuda/iq_kernels.cu b/src/kernels/cuda/iq_kernels.cu
 index d329558..8a11379 100644
 --- a/src/kernels/cuda/iq_kernels.cu

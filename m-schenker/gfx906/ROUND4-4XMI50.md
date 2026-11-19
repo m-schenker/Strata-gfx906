@@ -2,7 +2,7 @@
 
 > **Folded into the branch, 2026-11-20.**  The findings that change the branch are applied (scope of the TQ-only wins,
 > the router's independent number, the generalised 5-entry finding, `GRP_NC = 5` invalid, dot8 Routes B/C closed, the
-> clang-20 patch shipped as `patches/0010`, the L2 probe text fixed, `run/` untracked, the matrix script no longer able
+> clang-20 patch shipped as `patches/0006`, the L2 probe text fixed, `run/` untracked, the matrix script no longer able
 > to delete a committed result folder).  The host-instability section below (§0) is kept as a record of this session but
 > is not carried into PR #1: that host wedges with engines that contain none of these patches.
 

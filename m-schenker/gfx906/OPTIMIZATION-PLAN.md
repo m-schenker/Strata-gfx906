@@ -303,10 +303,10 @@ The nine levers below came after this plan was executed. None is started; each h
 - [ ] **P11-2** four-lanes-in-one packing — **blocked on hardware**: the pattern (four 4-byte weight reads a lane) exists in this tree only in `tqp_states8`, and all 96 expert entries on this box are `TQ2_T` (type 144), whose reads are two uint16 + one uint8, already coalesced; the dense `native_mmvq` path is weight-bandwidth-bound (346-620 GB/s measured)
 - [x] **P11-3** hyper-connection double quantisation — **measured, no gain**: two engine builds, both correct output, `STRATA_GR_SPLIT=1`: 67.4 tok/s without skipping the caller's pass, 50.8 with it. `patches/optional/0011`
 - [x] **P11-4** router — **measured hard, no change shipped**: 15.4-16.9 µs a call (~1.5 ms a token at 96 calls, launch overhead 1.3 µs); one-warp, 64-lane, per-lane-sort and sort+merge rewrites all ≥ baseline. The cost is a 100-deep dependent `ds_bpermute` chain (115 shuffles, 2,445 static instructions). `tools/hip/gfx906_router_lab.cpp`
-- [x] **P11-5** trellis weight stream in the global address space — **shipped**: ISA 5 × flat_load → 12 × global_load + 1; bitwise, −2.0 % at 8x1, −2.5 % at 16x1, 0 at 16x2, −2.0 % at 16x4, 0 at 32x1. `patches/0008`
+- [x] **P11-5** trellis weight stream in the global address space — **measured, now `optional/0014`**: ISA 5 × flat_load → 12 × global_load + 1; bitwise, −2.0 % at 8x1, −2.5 % at 16x1, 0 at 16x2, −2.0 % at 16x4, 0 at 32x1 — kernel-only, so not shipped
 - [x] **P11-6** software-pipelined weight prefetch in `native_mmvq_multi_kernel` — **measured, regression**: Q6_K +0.3 %, Q8_0 −2.0 %, Q4_0 −3.6 % (`tools/hip/gfx906_dense_bench.cpp`). `patches/optional/0010`
 - [x] **P11-7** DPP reductions — **measured, not shipped**: the ISA change works, but gfx906 needs **two instruction slots** between a DPP and its consumer, and parity fails in the real kernel even with them. `patches/optional/0009`
-- [x] **P11-8** wide staging of the trellis codebook (`uint4`, 1024 → 256 accesses) — **shipped**: bitwise, 9 of 10 runs faster by 4-7 µs. `patches/0007`
+- [x] **P11-8** wide staging of the trellis codebook (`uint4`, 1024 → 256 accesses) — **measured, now `optional/0013`**: bitwise, 9 of 10 runs faster by 4-7 µs — kernel-only, so not shipped
 - [ ] **P11-9** wave64 GDN decode — **blocked on hardware**: Gyro-M has no Gated Delta Net layers, so there is nothing to benchmark; the kernels and `bench/gdn_chunk_bench.cpp` are in the tree for a box with a GDN model
 - [x] **P11-10** `v_dot8_i32_i4` — **measured and handed off**: real Q4_0 rows give +56…+141 % a kernel, with 4-bit activations costing 8.9-9.6 % relative RMS against 0.5 %; not in this branch (numerics; IQ/TQ nibbles are indices). `bench/gfx906_dot8_kit.sh` + `DOT8-KIT.md` for the bigger box
 
@@ -337,7 +337,7 @@ Recording those rejections is part of the deliverable — it stops the next pers
   IQ/TQ nibbles are codebook indices. `IMPROVEMENTS.md` §8
 - [x] **R3-2** bitonic top-k router — **measured**: merge tree / bitonic network / per-lane sort are all slower than the
   engine's 16.2 µs (33.0 / 34.0 / 92.4), so the chain depth was the wrong explanation; removing the id from the
-  reduction (ballot tie-break) gives 9.60 µs, bitwise. End to end 38.05 vs 38.17 ms/step (noise). Shipped `patches/0009`
+  reduction (ballot tie-break) gives 9.60 µs, bitwise. End to end 38.05 vs 38.17 ms/step (noise). Now `optional/0015`: shipped briefly, moved out because the kernel win does not reach the engine
 - [x] **R3-3** L2 persistence for the hot expert set — **blocked, three ways**: no HIP persisting-L2 API on this stack,
   hot set 13.1 MB against 8 MiB L2, and the decode GEMV's bandwidth rises with footprint (occupancy-bound, no cache
   cliff). `tools/hip/gfx906_l2_probe.cpp`

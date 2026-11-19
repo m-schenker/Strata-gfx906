@@ -50,6 +50,7 @@ say "arm $name: $(ls "$patched" | tr '\n' ' ')"
 # ---- 2. sync the tree and build
 # every patch in this branch touches files under src/ or include/, so re-syncing the checkout restores the unpatched
 # sources and a previous arm's changes cannot linger
+podman exec "$container" sh -lc 'rm -rf /src/m-schenker/gfx906/patches /src/m-schenker/gfx906/added-source-files'
 tar -C "$repo" -cf - src include m-schenker/gfx906/patches m-schenker/gfx906/added-source-files 2>/dev/null |
     podman exec -i "$container" tar -C /src -xf -
 podman exec "$container" sh -lc 'rm -rf /tmp/arm-patches && mkdir -p /tmp/arm-patches'

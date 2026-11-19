@@ -27,6 +27,11 @@
 # its calls.  Below the +5 % kernel bar on its own, shipped because it is bitwise, never regresses and removes the
 # flat/LDS wait coupling from the hottest kernel.
 #
+# Status: NOT APPLIED - measured evidence, moved out of the applied set.
+# The ISA change is real and bitwise (5 x flat_load -> 12 x global_load + 1, so the weight stream stops sharing
+# lgkmcnt with the LDS codebook lookups) and it measures -2.0 to -2.5 % on the trellis row-dot.  It is here for the
+# same reason as 0013: a 2 % kernel number with no config-level confirmation.
+# Numbers and ISA: IMPROVEMENTS.md section 5, MEASUREMENT-LEDGER.md.
 --- a/src/kernels/cuda/iq_kernels.cu
 +++ b/src/kernels/cuda/iq_kernels.cu
 @@ -643,15 +643,26 @@

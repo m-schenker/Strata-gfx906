@@ -1,3 +1,9 @@
+# Status: NOT APPLIED - measured evidence, moved out of the applied set.
+# The strongest of the three: bitwise on ids AND weights, 16.24 -> 9.60 us a call here and 13.23 -> 9.35 us on a
+# second box (1.41x), format- and card-count-independent.  But decode per speculative step is 38.05 ms with it
+# against 38.17 without, i.e. 0.3 %, inside both boxes' noise.  That is the definition of "do not ship it as a
+# performance change": it is a clean patch that nobody can show a need for.
+# Method and parity checks: IMPROVEMENTS.md section 9, tools/hip/gfx906_router_lab.cpp, MEASUREMENT-LEDGER.md.
 diff --git a/src/kernels/cuda/native_router.cu b/src/kernels/cuda/native_router.cu
 index 6611bce..4b081e7 100644
 --- a/src/kernels/cuda/native_router.cu

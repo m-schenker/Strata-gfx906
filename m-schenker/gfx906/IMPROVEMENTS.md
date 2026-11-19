@@ -1,5 +1,8 @@
 # gfx906 improvements — one section per patch, with the numbers
 
+**Start with `MEASUREMENT-LEDGER.md`** — one page with every lever, its number and its verdict.  This file is the long
+form: one section per change, including the ones that are not applied.
+
 Every patch in `patches/` (and the reviewed ones in `patches/optional/`) has a section here: what changed, why that
 makes the card faster, and what it measured. **TG** is token generation (decode, tok/s), **PP** is prompt processing
 (prefill read, tok/s). All numbers are one **Instinct MI50 32 GB** (gfx906, wave64, 60 CU), model
@@ -20,7 +23,8 @@ And with all kept patches (this branch as it builds):
 |---|---|---|---|---|
 | R4 (patches 0001-0005) | **50.5** (38.1–70.6) | **50.7** (24.4–72.7) | 246.6 | 390.6 |
 
-Round 2 added two more kept patches (`0007` wide codebook staging, `0008` global address space for the weight stream) and
+Round 2 added two further patches (`0007`/`0008` as they were numbered then — now `optional/0013` and `optional/0014`,
+measured but not applied because they only move the kernel) and
 re-measured the flagship change with a decode probe rather than the full suite (`bench/gfx906_tg_probe.sh`, 6 reps each):
 **staging on 69.7 tok/s against 60.8 tok/s off (+14.6 %)**. The kernel-level effect of `0007` + `0008` is −4.9 % at 16×1
 (118.8 → 113.7 µs for gate/up + down), which is inside what a full suite round would call noise, so it is claimed at the
@@ -368,13 +372,19 @@ checked without a profiler.
 
 ### Round 2: the same queue, each lever now with its own run
 
+*(Three of the results below — the wide staging copy, the global address space and the router ballot — were applied for a
+while and are now `patches/optional/0013`, `0014` and `0015`: each is bitwise and each makes the kernel faster, but none
+of them could be shown to move a config-level number. The branch only ships what a suite or probe can see. The numbers
+stay here because they are what stops the next person re-running them.)*
+
+
 Everything below was taken after the first pass, on an exclusive card, through `bench/gfx906_build.sh` (sync + re-apply
 the branch's patches + rebuild) and the arm named in each row.
 
 | lever | implementation | measured | outcome |
 |---|---|---|---|
-| **wide LDS codebook staging** (`patches/0007`) | the trellis codebook copy is `uint4` per thread (256 accesses) instead of `uint32` (1024), same 4 KB, same places | bitwise; 10 of 10 runs within ±2.5 %, 9 of 10 faster: 8x1 79.5→78.4/77.9, 16x1 118.8→115.7/118.5, 16x2 137.8→137.3/135.9, 16x4 174.4→178.5/171.8, 32x1 207.4→200.5/204.9 µs | **shipped** (free instruction reduction, no regression) |
-| **trellis reads in the global address space** (`patches/0008`) | the three weight-read sites (u16 stream, u8 state byte, f16 scale) are qualified address space 1; the ISA goes from 5 × `flat_load` to 12 × `global_load` + 1 flat | bitwise; against the same build without it: 8x1 76.4 (−2.0 %), 16x1 113.7 (−2.5 %), 16x2 136.2 (0.0 %), 16x4 170.2 (−2.0 %), 32x1 202.7 (0.0 %) µs — **and unlike the first attempt it moves the 2–5-token verify windows** | **shipped** |
+| **wide LDS codebook staging** (`optional/0013` — measured, not applied) | the trellis codebook copy is `uint4` per thread (256 accesses) instead of `uint32` (1024), same 4 KB, same places | bitwise; 10 of 10 runs within ±2.5 %, 9 of 10 faster: 8x1 79.5→78.4/77.9, 16x1 118.8→115.7/118.5, 16x2 137.8→137.3/135.9, 16x4 174.4→178.5/171.8, 32x1 207.4→200.5/204.9 µs | **measured, not applied** (kernel-only) |
+| **trellis reads in the global address space** (`optional/0014` — measured, not applied) | the three weight-read sites (u16 stream, u8 state byte, f16 scale) are qualified address space 1; the ISA goes from 5 × `flat_load` to 12 × `global_load` + 1 flat | bitwise; against the same build without it: 8x1 76.4 (−2.0 %), 16x1 113.7 (−2.5 %), 16x2 136.2 (0.0 %), 16x4 170.2 (−2.0 %), 32x1 202.7 (0.0 %) µs — **and unlike the first attempt it moves the 2–5-token verify windows** | **measured, not applied** (kernel-only) |
 | **software-pipelined weight prefetch** (`optional/0010`) | next iteration's fragment loaded into registers before the current FMA chain in `native_mmvq_multi_kernel`; `STRATA_MMVQ_PF=0` reverts | bitwise; via the new `tools/hip/gfx906_dense_bench.cpp` (engine launcher, k 2560 n 5120): Q6_K 31.10 → 31.00 µs (+0.3 %, noise), Q8_0 22.46 → 22.92 (−2.0 %), Q4_0 19.92 → 20.67 (−3.6 %) | **not shipped** — the plain kernel already runs at 346–620 GB/s of weights; hipfire's +4.8 % was a one-warp-per-row shape, not this one |
 | **router launch shape** (`tools/hip/gfx906_router_lab.cpp`) | four variants against the engine's kernel, ids and weights checked against it: A as shipped, B one warp instead of eight, C one 64-lane wave (8 values a lane), D per-lane sorted list, E sort + merge tree | **A 15.4-16.9 µs a call** (launch overhead alone 1.3 µs, measured with an empty kernel of the same geometry); B 14.5-18.1, C 14.8-19.1, D 92.5, E 32.4 µs. Ids bitwise for A/B/D/E, same set for C | **no change shipped**: the cost is a 100-deep dependent `ds_bpermute` chain (10 ranks × 5 rounds × 2 shuffles = 115 `ds_bpermute_b32`, 2,445 static instructions) and none of the obvious rewrites beats it. At 96 calls a token that chain is ~1.5 ms, so the *next* attempt has to attack the chain itself (a bitonic top-10 over registers), not the geometry |
 | **hyper-connection double quantisation** (`optional/0011`) | `fused_gr_read_multi`'s `STRATA_GR_SPLIT=1` path returned "no q8_1 image" although its up kernels write a tail; the patch returns `q8` and skips the caller's second pass | **measured, no gain**: two engine builds from the same tree with the shipped patches, both with `STRATA_GR_SPLIT=1`, both serving correct output (40 tokens), `bench/gfx906_tg_probe.sh`: **without 67.4 tok/s (5 reps), with 50.8 tok/s (4 reps)**. The medians are noisy on this card (single reps ranged 50–197), but nothing supports the change and the removed pass writes the same bytes anyway | **not shipped** |
@@ -485,7 +495,11 @@ So the numerics objection to dot8 is gone for Q4_0/Q4_1/Q4_K-style formats. What
 (2) in §6: IQ4/IQ2/TQ store **codebook indices** in those nibbles, and index × index is meaningless. That is a format
 property, not a precision one, and it is not fixed by a correction pass.
 
-## 9. `0009-both-gfx906-router-ballot-select.patch` — half the router's shuffles
+## 9. `optional/0015-both-gfx906-router-ballot-select.patch` — half the router's shuffles
+
+**Status: not applied.**  The kernel win is solid — and it is the only format- and card-count-independent one in the
+set — but 0.3 % per speculative step is inside the noise on both boxes, so it is kept as measured evidence in
+`patches/optional/0015`, not shipped.  (`MEASUREMENT-LEDGER.md`, row `0015`.)
 
 The review's diagnosis was that the router's cost is a 100-deep dependent `ds_bpermute` chain. Three rewrites that
 shorten the chain (a merge tree, a bitonic selection network, per-lane sorting) were measured and **all three are
@@ -591,11 +605,11 @@ format — on IQ4_XS, 16 groups × 5 tokens costs **+59 %** over 4 tokens.  A 5-
 **The scope, in one table.**  What each shipped patch can fire on, which is what a reader has to know before they
 expect any of §1's numbers:
 
-| format of the routed experts | `0005` | `0007` | `0008` | `0009` | `0003`/`0004` |
-|---|---|---|---|---|---|
-| TQ2_T / TQK6 / TQK7 (types 144-146) | **fires** (+26 % decode) | fires | fires | fires | fires |
-| IQ4_XS / IQ3_S / IQ4_NL / IQ2_* | no (codebook indices) | no | no | fires | fires |
-| Q8_0 / Q6_K | no | no | no | fires | fires |
+| format of the routed experts | `0005` (applied) | `optional/0013`, `0014` | `optional/0015` | `0003`/`0004` |
+|---|---|---|---|---|
+| TQ2_T / TQK6 / TQK7 (types 144-146) | **fires** (+26 % decode) | fire | fires | fires |
+| IQ4_XS / IQ3_S / IQ4_NL / IQ2_* | no (codebook indices) | no | fires | fires |
+| Q8_0 / Q6_K | no | no | fires | fires |
 
 measured as: eight binaries (baseline, one per patch, all), eight shapes, **identical FNV hash per shape and every delta
 inside ±1.3 %** on IQ4_XS.  A patch that cannot fire is inert, which is the only acceptable outcome for it: it must not
@@ -607,7 +621,7 @@ contain none of them) wedges the GPU at kernel-module load on MI50 with a 200 K 
 no suite round was obtainable here.  `STRATA_WINDOW_WARM=0`, `--lookup-max-t 0` and ≤32 K context let one request
 through.  See `bench/results/2026-11-19-4xmi50-iq4xs/engine-hang-0.2.15.txt`.
 
-**Build portability (`patches/0010`).**  That round also had to build the branch against a distro ROCm (clang 20), where
+**Build portability (`patches/0006`).**  That round also had to build the branch against a distro ROCm (clang 20), where
 `__shared__ alignas(16) int4 x[]` is rejected in the two expdec kernels.  Swapping the two specifiers
 (`alignas(16) __shared__ int4 x[]`) is accepted by clang 20, by this box's clang 24 and by nvcc, with the same alignment
 and the same code object — so it is now applied rather than optional.  Measured on this card with the patch in:

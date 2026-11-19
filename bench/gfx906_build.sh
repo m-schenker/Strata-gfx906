@@ -16,6 +16,10 @@ container=${RUN_CONTAINER:-strata-dev}
 target=${*:-native_expert_bench}
 
 # the sources the build reads; CMakeLists/CMake files are deliberately not synced (a configure change needs care)
+# the patch folders are replaced, not merged: `tar -x` does not delete, so a patch that was removed from the checkout
+# would otherwise stay in /src and be applied again (this hid a re-sync after three patches were moved to optional/
+# - the build reported "0009 ... applied" for a file that no longer exists here)
+podman exec "$container" sh -lc 'rm -rf /src/m-schenker/gfx906/patches /src/m-schenker/gfx906/added-source-files'
 tar -C "$repo" -cf - src include m-schenker/gfx906/patches m-schenker/gfx906/added-source-files 2>/dev/null |
     podman exec -i "$container" tar -C /src -xf -
 

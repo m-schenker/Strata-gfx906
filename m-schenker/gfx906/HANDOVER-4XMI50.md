@@ -18,7 +18,7 @@ There are four jobs, in this order:
 > **Done — 2026-11-19.**  This handover was worked on a 4× MI50 box with `Qwen3.8-Flash-Next-UD-IQ4_XS` and the same
 > model in `Q8_0`.  Results: `ROUND4-4XMI50.md` (report), `bench/results/2026-11-19-4xmi50-iq4xs/` (raw numbers, build
 > recipe, reproduction commands), `bench/experiments/verify-window-5/` (negative results), `PROPOSED-PR-EDITS.md`
-> (what to change in PR #1), `patches/0010-both-alignas-llvm20.patch` (build fix for distro ROCm / clang 20 — it came back as `optional/0013` and was
+> (what to change in PR #1), `patches/0006-both-alignas-llvm20.patch` (build fix for distro ROCm / clang 20; it came back as `optional/0013`, was
 > promoted to an applied patch, measured neutral on the first box).
 > Short version: jobs 1 and 2 are measured (the decode wins are TQ-only; dot8 reproduced and its Routes B/C closed);
 > job 3 is *located* but not landed (the 4+1 cliff is not trellis-specific; the 5-entry path belongs in
@@ -122,9 +122,9 @@ Shipped, in `m-schenker/gfx906/patches/`:
 | `0003` | the prompt path's rocBLAS GEMMs + table exist for gfx906 at all: **+10.9 % PP 4K, +8.8 % PP 16K** | should hold and may be bigger for your models — but **re-tune the table** (§2.4) |
 | `0004` | the tuner calibrates 1…128-token buckets and the router's padded `ldy=96` shape | architecture-generic; it only matters together with a table |
 | `0005` | trellis codebook staged in LDS: **+26 % decode**, 294→120 µs at the kernel | **TQ types only** (144/145/146). With IQ4_XS expect *no effect* — verify that it is a no-op rather than a slowdown, because it changes LDS use |
-| `0007` | the staging copy moves 16 B/thread instead of 4: kernel −4…−7 µs, bitwise | same, TQ-only |
-| `0008` | trellis weight stream in the global address space: kernel −2.0…−2.5 %, bitwise | same, TQ-only |
-| `0009` | router selection: one reduction per rank with a ballot tie-break. Kernel **16.24 → 9.60 µs**, bitwise; engine 38.05 vs 38.17 ms/step | **card-count independent and model-independent** — this is the one patch whose kernel win should survive everywhere. Worth re-measuring with `tools/hip/gfx906_router_lab.cpp` against *your* export shape (if your models route 8 of 256, use the `route_topk` path) |
+| `0007` → now `optional/0013` | the staging copy moves 16 B/thread instead of 4: kernel −4…−7 µs, bitwise | **not applied any more** — kernel-only, see the ledger |
+| `0008` → now `optional/0014` | trellis weight stream in the global address space: kernel −2.0…−2.5 %, bitwise | **not applied any more** — kernel-only, see the ledger |
+| `0009` → now `optional/0015` | router selection: one reduction per rank with a ballot tie-break. Kernel **16.24 → 9.60 µs**, bitwise; engine 38.05 vs 38.17 ms/step | **card-count independent and model-independent** — this is the one patch whose kernel win should survive everywhere. Worth re-measuring with `tools/hip/gfx906_router_lab.cpp` against *your* export shape (if your models route 8 of 256, use the `route_topk` path) |
 
 Measured and left out, in `patches/optional/` — do **not** re-test these from scratch, but do check the two that are
 model-shaped: `optional/0006` (AMD 64-lane row layouts: +3-6 % at 1 token, −63…−171 % at 2-5 tokens) and
@@ -143,7 +143,7 @@ bench/gfx906_patch_matrix.sh p0003-04   0003 0004
 bench/gfx906_patch_matrix.sh p0007      0007
 bench/gfx906_patch_matrix.sh p0008      0008
 bench/gfx906_patch_matrix.sh p0009      0009
-bench/gfx906_patch_matrix.sh all        0003 0004 0005 0007 0008 0009
+bench/gfx906_patch_matrix.sh all        0003 0004 0005
 ```
 
 Run the whole list per model per card count: `GPU=0` with IQ4_XS, `GPU=0` with Q8, `GPU=0,1,2,3` with each. That is

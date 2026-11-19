@@ -12,8 +12,10 @@ one Instinct MI50 32 GB, clocks pinned, nothing else on the card. Result folders
 | 0004 | the tuner calibrates the buckets a real prompt asks for (1…128) and the router's padded `ldy=96` shape | `patches/0004-both-tune-rocblas-small-buckets-router-ldy.patch` |
 | — | `tools/hip/gfx906-rocblas-5.9.0.txt`: the table measured on this card against this image's rocBLAS (210 rows, 167 with a better-than-default solution, up to 5.0× on a shape) | `added-source-files/tools/hip/`, copied into the image |
 | 0005 | the **trellis expert kernels stage their int8 codebook in LDS by default on gfx906** (`tq_stage_on()` returned false for every HIP build) | `patches/0005-both-gfx906-trellis-lds-codebook-default.patch` |
-| 0007 | the codebook's staging copy moves 16 bytes a thread instead of 4 (256 accesses instead of 1024) | `patches/0007-both-gfx906-trellis-codebook-wide-stage.patch` |
-| 0008 | the trellis weight stream is read through the **global address space**, so its waits use `vmcnt` and stop sharing `lgkmcnt` with the LDS codebook lookups | `patches/0008-both-gfx906-trellis-global-address-space.patch` |
+| ~~0007~~ | the codebook's staging copy moves 16 bytes a thread instead of 4 — bitwise, 4–7 µs on the trellis kernel, **no config-level number**, so it is now `optional/0013` | `patches/optional/0013-...` |
+| ~~0008~~ | the trellis weight stream in the global address space — −2.0…−2.5 % on the kernel, **no config-level number**, so it is now `optional/0014` | `patches/optional/0014-...` |
+
+| 0006 | `alignas(16) __shared__ int4` instead of `__shared__ alignas(16) int4` in the two expdec kernels, so the branch also builds with clang 20 / distro ROCm (measured neutral) | `patches/0006-both-alignas-llvm20.patch` |
 
 ## Headline (full suite, medians)
 
@@ -82,11 +84,11 @@ measuring a stale build is indistinguishable from measuring a null change), `ben
 | 1 | `__mul24` in the trellis address arithmetic | bitwise; 8x1 75.6, 16x1 121.4, 16x2 135.4, 16x4 173.9, 32x1 214.2 µs against 79.5 / 118.8 / 137.8 / 174.4 / 207.4 — signs both ways | **dropped** (`optional/0008`) |
 | 2 | four-lanes-in-one packing | not measurable: no `TQP` pack on this box (all 96 entries are `TQ2_T`), and `TQ2_T`'s reads are already coalesced; dense path is weight-bound at 346-620 GB/s | **blocked** |
 | 3 | hyper-connection double quantisation | two engine builds, correct output in both, `STRATA_GR_SPLIT=1`: 67.4 tok/s without skipping the caller's pass, 50.8 with it | **dropped** (`optional/0011`) |
-| 4 | router launch shape | engine router 15.4-16.9 µs a call (~1.5 ms a token), launch overhead 1.3 µs; variants: one warp 14.5-18.1, 64-lane 14.8-19.1, per-lane sort 92.5, sort+merge 32.4 µs | **no change shipped** (the chain is the cost) |
-| 5 | trellis reads in the global address space | ISA 5 × `flat_load` → 12 × `global_load` + 1; bitwise, −2.0 % at 8x1, −2.5 % at 16x1, 0 at 16x2, −2.0 % at 16x4, 0 at 32x1 | **kept** (`0008`) |
+| 4 | router launch shape | engine router 15.4-16.9 µs a call (~1.5 ms a token), launch overhead 1.3 µs; variants: one warp 14.5-18.1, 64-lane 14.8-19.1, per-lane sort 92.5, sort+merge 32.4 µs | **no change shipped** (later beaten by the ballot select, itself 0.3 % end to end — `optional/0015`) |
+| 5 | trellis reads in the global address space | ISA 5 × `flat_load` → 12 × `global_load` + 1; bitwise, −2.0 % at 8x1, −2.5 % at 16x1, 0 at 16x2, −2.0 % at 16x4, 0 at 32x1 | **measured, not applied** (`optional/0014`) |
 | 6 | software-pipelined prefetch in `native_mmvq_multi_kernel` | Q6_K +0.3 %, Q8_0 −2.0 %, Q4_0 −3.6 % | **dropped** (`optional/0010`) |
 | 7 | DPP reductions for the 32-lane butterfly | ISA right (4 DPP + 1 shuffle), but **two slots of distance are required between dependent DPPs** and parity still fails in-kernel | **dropped** (`optional/0009`) |
-| 8 | wide staging of the trellis codebook | `uint4` instead of `uint32`: 256 accesses instead of 1024; bitwise, 9 of 10 runs faster by 4-7 µs | **kept** (`0007`) |
+| 8 | wide staging of the trellis codebook | `uint4` instead of `uint32`: 256 accesses instead of 1024; bitwise, 9 of 10 runs faster by 4-7 µs | **measured, not applied** (`optional/0013`) |
 | 9 | wave64 GDN decode | not measurable: Gyro-M has no GDN layers | **blocked** |
 | — | `v_dot8_i32_i4` | real Q4_0 rows, corrected dp4a baseline: +55.4 % / +140.6 % / +48.7 % at 8/16/32 groups; 4-bit activations cost 8.9-9.6 % relative RMS against 0.5 % | **handed off** (`DOT8-KIT.md`) |
 | — | codebook staging end to end | 6 reps a side: **69.7 tok/s on, 60.8 off (+14.6 %)**; a 3-rep pair that read 77.9 against 51.5 was noise | **kept, re-quantified** |
@@ -101,7 +103,7 @@ when the real culprit was the stale tree.
 | lever | what it turned into | numbers | call |
 |---|---|---|---|
 | dot8 + correction pass | two base-16 digits of the 8-bit activation are both valid 4-bit fields, so a second dot8 pass over the digits reproduces the dp4a integer result exactly | hi/lo: 0.0431 ms at 16 groups against dp4a's 0.0876 (**+104 %**) with the same 0.556 % error; +26 % at 32 groups; parity at 8. The rounded-residual version: 0.0445 ms, 0.808 % error | **not in the engine** (IQ/TQ nibbles are indices), kits and numbers recorded |
-| bitonic router | merge tree, bitonic network and per-lane sort all lose to the engine's 16.2 µs (33.0 / 34.0 / 92.4) - the cost is instruction count, not chain depth. Removing the id from the reduction (ballot tie-break) gives 9.60 µs, bitwise | kernel **1.69×**; engine **38.05 vs 38.17 ms/step** (0.3 %, inside noise) | **shipped** as `patches/0009`, with the engine number stated as unmeasurable |
+| bitonic router | merge tree, bitonic network and per-lane sort all lose to the engine's 16.2 µs (33.0 / 34.0 / 92.4) - the cost is instruction count, not chain depth. Removing the id from the reduction (ballot tie-break) gives 9.60 µs, bitwise | kernel **1.69×**; engine **38.05 vs 38.17 ms/step** (0.3 %, inside noise) | **not applied**: `optional/0015`, with the engine number (0.3 %) stated as unmeasurable |
 | L2 residency | no persisting-L2 API in this HIP, hot set 13.1 MB vs 8 MiB L2, and the GEMV's bandwidth rises with footprint (occupancy-bound, no cache cliff) | probe: 63.6 GB/s at 1 MiB → 597.9 at 52.4 MiB | **not implemented**, blocker recorded |
 | 2-5 token verify kernel | the 5-token window costs +52 % over 4 tokens (weights streamed twice, `GRP_NC = 4`); chunk-by-5 makes it one pass | 16×5 **258.4 → 193.6 µs (−25 %)**, bitwise, but 16×1 +11 %, 16×2 +8 %, 16×3 +7 %, 16×4 +6 %, 32×1 +10 % (LDS 11.5 → 14.4 KB) | **measured, not applied** (`optional/0012`); needs a separate kernel to get both sides |
 
