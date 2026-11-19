@@ -21,7 +21,27 @@ patches/optional/**              ignored
 | Patch | Backend | What it does |
 | --- | --- | --- |
 | `0001-both-gfx906-compat-missing-mappings.patch` | both | 15 CUDA-to-HIP mappings the gfx906 compat layer is missing (`cudaDeviceGetStreamPriorityRange` and `cudaStreamCreateWithPriority` of the DFlash2 drafter, the 4-bit expert fill's error codes, an occupancy query, function and pointer attributes, a graph flag). **Required**: without it `ninja strata` stops on `src/core/dflash2.cpp`. |
+| `0003-both-gfx906-rocblas-prompt-table.patch` | both | makes the prompt path's FP16-out rocBLAS GEMMs and the `STRATA_ROCBLAS_TUNING` solution table exist on gfx906: the rocBLAS package is looked for in the gfx906 toolchain and the `STRATA_ENABLE_HIP`-only gate that compiles the path and the tuner is opened for `STRATA_HIP_GFX906`. Without it a gfx906 build has no rocBLAS prompt path at all (4K prompt 232 vs 392 tok/s against the same card's 0.2.1 install), and `tune_rocblas` is not even a target. |
+| `0004-both-tune-rocblas-small-buckets-router-ldy.patch` | both | the tuner calibrates the token buckets a real prompt asks for (1…128, not just 256+) and the router's padded `ldy=96` shape, which otherwise never matches a row. Architecture-generic; changes which rows a table has, not what a row means. |
+| `0005-both-gfx906-trellis-lds-codebook-default.patch` | both | the trellis expert kernels (144/145/146) copy their 4 KB int8 codebook into shared memory on gfx906 by default instead of re-reading it from global memory: `native_expert_bench`, 16 experts, gate/up + down 294 → 120 µs at 1 token and 385 → 172 µs at 4 tokens (bitwise equal), and **+24 % decode end to end** (38.9 → 48.1 tok/s at 3.1 K prompt depth). `STRATA_TQ_STAGE=0` is the way back; the wave32 HIP backend is untouched. |
+| `0006-both-alignas-llvm20.patch` | both | `__shared__ alignas(16) int4 x[]` → `alignas(16) __shared__ int4 x[]` in the two expdec kernels. Compiler portability only: clang 20 (distro ROCm 7.1.1) rejects the first form, clang 24 and nvcc accept both, same alignment and same code object. Needed to build the branch on a distro-ROCm box; measured neutral here (bitwise, 16×1 118.1 vs 115.0 µs — inside the run-to-run band). |
 | `0002-ds41-vendored-engine-cmake.patch` | both | the build wiring for the vendored DeepSeek engine: `CMakeLists.txt` calls `cmake/strata_dsv41.cmake` once the gfx906 backend has set up `CUDA::cudart`, `CUDA::cublas` and `strata_prefill`; `cmake/strata_ggml.cmake` builds ggml-cpu with BMI2 OFF when `STRATA_BUILD_DSV41` is on, as upstream's own dsv41 block did. |
+
+## Which formats a patch can fire on
+
+The code `0005` changes is the trellis row-dot, so it is inert on any pack whose experts are not types 144-146 —
+measured on a 4x MI50 box with IQ4_XS: eight binaries (baseline, one per patch, all), eight shapes, **identical FNV hash
+per shape and every delta inside ±1.3 %**. A patch that cannot fire must be inert, never slow; that is what the null says.
+
+| format of the routed experts | `0005` | `0003`/`0004` |
+|---|---|---|
+| TQ2_T / TQK6 / TQK7 (types 144-146) | fires (+26 % decode) | fires |
+| IQ4_XS / IQ3_S / IQ4_NL / IQ2_* | no (nibbles are codebook indices) | fires |
+| Q8_0 / Q6_K | no | fires |
+
+Changes measured and **not** kept are not carried as patches: each one is a row in
+[../MEASUREMENT-LEDGER.md](../MEASUREMENT-LEDGER.md#4-implemented-measured-and-not-shipped) with its number and why it
+was dropped.
 
 The gfx906 backend itself is part of the tree: `CMakeLists.txt` builds the CUDA targets through
 `include/strata/platform/hip_compat/` when `-DSTRATA_HIP_GFX906=ON`, and `docs/AMD_HIP.md` documents the gfx906 switches.

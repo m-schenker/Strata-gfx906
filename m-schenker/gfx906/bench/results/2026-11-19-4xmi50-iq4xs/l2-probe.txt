@@ -1,0 +1,13 @@
+    1.0 MiB    102   0.0116    89.8
+    2.0 MiB    204   0.0125   166.8
+    3.0 MiB    307   0.0167   188.4
+    4.0 MiB    409   0.0214   196.2
+    6.0 MiB    614   0.0241   261.0
+    9.0 MiB    921   0.0289   325.9
+   13.1 MiB   1341   0.0334   411.1
+   26.2 MiB   2682   0.0592   463.5
+   52.4 MiB   5365   0.0878   625.8
+
+ the engine's decode hot set: 10 of 512 experts per layer x 1.31 MB = 13.1 MB per layer,
+ and 48 layers are live per token - the 4 MiB L2 holds a fifth of one layer's picks.
+

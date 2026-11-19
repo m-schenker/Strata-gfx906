@@ -453,6 +453,12 @@ COPY tools/ /opt/strata/tools/
 # the vendored DeepSeek engine's tools (the packer, its smoke test and tune): installed into the build tree by
 # apply-source-patches.sh, so they come from the builder stage rather than from this context
 COPY --from=builder /src/tools/dsv41 /opt/strata/tools/dsv41
+# The rocBLAS solution table calibrated on a gfx906 card for THIS image's rocBLAS (patch 0003 opens the gate that reads
+# it; STRATA_ROCBLAS_TUNING names it at run time, docker-compose.yml does).  It arrives through added-source-files/, so
+# it is in the build tree, not in the repository's own tools/hip.  A table is valid for one rocBLAS build only (the
+# version is in the file's header): when ROCM_VERSION moves, re-calibrate with
+#   docker compose run --rm strata shell /opt/strata/engine/tune_rocblas --tuning-out /data/tuning/<arch>-rocblas-<version>.txt
+COPY --from=builder /src/tools/hip/gfx906-rocblas-5.9.0.txt /opt/strata/tools/hip/gfx906-rocblas-5.9.0.txt
 COPY data/ /opt/strata/data/
 COPY docs/MANAGEMENT_PROTOCOL.md /opt/strata/docs/MANAGEMENT_PROTOCOL.md
 
