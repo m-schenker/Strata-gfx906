@@ -1,7 +1,0 @@
-# gfx906 decode probe: stage-on-6   2026-11-18T19:17:27+01:00
-rep 1: 65 tok 0.926 s, 129 tok 1.898 s -> decode 65.8 tok/s
-rep 2: 65 tok 0.933 s, 129 tok 1.833 s -> decode 71.1 tok/s
-rep 3: 65 tok 0.934 s, 129 tok 1.808 s -> decode 73.2 tok/s
-rep 4: 65 tok 0.916 s, 129 tok 1.834 s -> decode 69.7 tok/s
-rep 5: 65 tok 0.992 s, 129 tok 1.964 s -> decode 65.8 tok/s
-rep 6: 65 tok 0.936 s, 129 tok 1.735 s -> decode 80.1 tok/s

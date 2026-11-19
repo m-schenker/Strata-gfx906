@@ -5,7 +5,7 @@
 
 Why: `v_dot8_i32_i4` multiplies four-bit VALUES.  In an IQ4_XS / IQ4_NL / IQ3_S / TQ2_T block the nibble is an
 index into a codebook (or a trellis state), so a dot8 path over it computes index x index - a different function, not
-a slower one.  `DOT8-KIT.md` S3.2 asks for exactly this table before anyone spends a round on a dot8 arm; this is that
+a slower one.  `MEASUREMENT-LEDGER.md` section 6 asks for exactly this table before anyone spends a round on a dot8 arm; this is that
 classifier.  It reads the GGUF tensor list (no data), so it is fast even on a 90 GB model, and it needs nothing but
 python3 (no numpy, no gguf-py).
 

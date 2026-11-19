@@ -1,5 +1,0 @@
-# gfx906 decode probe: gr-split-fix   2026-11-18T19:31:30+01:00
-rep 1: 65 tok 1.169 s, 129 tok 2.428 s -> decode 50.8 tok/s
-rep 2: 65 tok 1.037 s, 129 tok 2.744 s -> decode 37.5 tok/s
-rep 3: 65 tok 1.053 s, 129 tok 2.031 s -> decode 65.4 tok/s
-rep 4: 65 tok 1.980 s, 129 tok 2.305 s -> decode 196.9 tok/s

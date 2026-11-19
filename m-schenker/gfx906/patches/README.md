@@ -27,36 +27,21 @@ patches/optional/**              ignored
 | `0006-both-alignas-llvm20.patch` | both | `__shared__ alignas(16) int4 x[]` → `alignas(16) __shared__ int4 x[]` in the two expdec kernels. Compiler portability only: clang 20 (distro ROCm 7.1.1) rejects the first form, clang 24 and nvcc accept both, same alignment and same code object. Needed to build the branch on a distro-ROCm box; measured neutral here (bitwise, 16×1 118.1 vs 115.0 µs — inside the run-to-run band). |
 | `0002-ds41-vendored-engine-cmake.patch` | both | the build wiring for the vendored DeepSeek engine: `CMakeLists.txt` calls `cmake/strata_dsv41.cmake` once the gfx906 backend has set up `CUDA::cudart`, `CUDA::cublas` and `strata_prefill`; `cmake/strata_ggml.cmake` builds ggml-cpu with BMI2 OFF when `STRATA_BUILD_DSV41` is on, as upstream's own dsv41 block did. |
 
-## What is reviewed and *not* applied (`patches/optional/`)
-
-Each of these carries its measurement in the file header; the summary is `IMPROVEMENTS.md` §7 and `NEXT-LEVERS.md`.
-
-| Patch | Measured | Call |
-| --- | --- | --- |
-| `0006-both-gfx906-trellis-amd-layout-dispatch.patch` | mode 1/2/4 row layouts: +3-6 % at 1 token a group, **-63 to -171 %** at 2-5 tokens (the groups `--spec 4` actually produces); mode 1 not bitwise | not applied |
-| `0007-qwen-gfx906-attn-query-swizzle-default.patch` | a prompt-path arm that measured inside the noise | not applied |
-| `0008-both-gfx906-mul24-address-math.patch` | `__mul24` in the trellis address arithmetic: bitwise, ±2 % both ways over five shapes (the kernel is memory-bound, not integer-pipe-bound) | not applied |
-| `0009-both-gfx906-dpp-warp-sum.patch` | 4 of 5 `ds_bpermute` replaced by DPP: the ISA change works, but gfx906 needs **two instruction slots** between a DPP and its consumer, and parity fails in the real kernel even with them | not applied |
-| `0010-both-mmvq-software-pipeline.patch` | weight prefetch in `native_mmvq_multi_kernel`: Q6_K +0.3 %, Q8_0 -2.0 %, Q4_0 -3.6 % | not applied |
-| `0013-both-gfx906-trellis-codebook-wide-stage.patch` | the staging copy moves 16 B/thread instead of 4: bitwise, 9 of 10 runs 4–7 µs faster on the trellis row-dot | not applied (kernel-only, no config-level number) |
-| `0014-both-gfx906-trellis-global-address-space.patch` | trellis weight reads in the global address space (5 × `flat_load` → 12 × `global_load` + 1): bitwise, −2.0…−2.5 % | not applied (kernel-only, no config-level number) |
-| `0015-both-gfx906-router-ballot-select.patch` | router: one reduction per rank, ballot tie-break. **16.24 → 9.60 µs (1.69×)**, 13.23 → 9.35 (1.41×) on the second box, ids and weights bitwise — but engine 38.05 vs 38.17 ms/step (0.3 %, noise) | not applied (does not reach the engine on either box) |
-| `0012-both-trellis-5token-single-pass.patch` | chunk a group by 5 instead of 4 so a 5-token verify window is one pass over the weights: 16×5 258.4 → **193.6 µs (−25 %)**, bitwise — but the staging buffer grows 11.5 → 14.4 KB of LDS and 16×1/2/3/4 pay +11/+8/+7/+6 %. **The cliff it fixes is not trellis-specific** (+59 % on IQ4_XS), so the fix has to exist for `native_gu_lds_kernel`/`native_down_lds_kernel` too — and `GRP_NC = 5` alone is invalid: it drops the fifth entry and changes the output hash (16×5 "improves" 36 %) | not applied (needs a separate kernel to get both sides) |
-| `0013-both-alignas-llvm20.patch` | `__shared__ alignas(16) int4 x[]` → `alignas(16) __shared__ int4 x[]` in the two expdec kernels: clang 20 (distro ROCm 7.1.1) rejects the first form ("alignas attribute cannot be applied to types"), TheRock 10.3's clang accepts both. Same alignment, same code object, no behaviour change | not applied (only needed to build the branch on a distro-ROCm box — see `ROUND4-4XMI50.md`) |
-| `0011-both-hyperconnection-double-quantize.patch` | the caller's second quantise skipped: 50.8 tok/s against 67.4 tok/s without it (same tree, `STRATA_GR_SPLIT=1`, both correct) | not applied |
-
 ## Which formats a patch can fire on
 
-The code `0005` (and `optional/0013`/`0014`) changes is the trellis row-dot, so it is inert on any pack whose experts
-are not types 144-146 — measured on a 4x MI50 box with IQ4_XS: eight binaries (baseline, one per patch, all),
-eight shapes, **identical FNV hash per shape and every delta inside ±1.3 %**. A patch that cannot fire must be inert,
-never slow; that is what the null says.
+The code `0005` changes is the trellis row-dot, so it is inert on any pack whose experts are not types 144-146 —
+measured on a 4x MI50 box with IQ4_XS: eight binaries (baseline, one per patch, all), eight shapes, **identical FNV hash
+per shape and every delta inside ±1.3 %**. A patch that cannot fire must be inert, never slow; that is what the null says.
 
-| format of the routed experts | `0005` (applied) | `optional/0013`, `0014` | `optional/0015` | `0003`/`0004` |
-|---|---|---|---|---|
-| TQ2_T / TQK6 / TQK7 (types 144-146) | fires (+26 % decode) | fire | fires | fires |
-| IQ4_XS / IQ3_S / IQ4_NL / IQ2_* | no (nibbles are codebook indices) | no | fires | fires |
-| Q8_0 / Q6_K | no | no | fires | fires |
+| format of the routed experts | `0005` | `0003`/`0004` |
+|---|---|---|
+| TQ2_T / TQK6 / TQK7 (types 144-146) | fires (+26 % decode) | fires |
+| IQ4_XS / IQ3_S / IQ4_NL / IQ2_* | no (nibbles are codebook indices) | fires |
+| Q8_0 / Q6_K | no | fires |
+
+Changes measured and **not** kept are not carried as patches: each one is a row in
+[../MEASUREMENT-LEDGER.md](../MEASUREMENT-LEDGER.md#4-implemented-measured-and-not-shipped) with its number and why it
+was dropped.
 
 The gfx906 backend itself is part of the tree: `CMakeLists.txt` builds the CUDA targets through
 `include/strata/platform/hip_compat/` when `-DSTRATA_HIP_GFX906=ON`, and `docs/AMD_HIP.md` documents the gfx906 switches.
@@ -109,7 +94,6 @@ docker compose -f m-schenker/gfx906/docker-compose.yml build
 
 | Patch | Backend | What it does |
 | --- | --- | --- |
-| `optional/0006-both-gfx906-trellis-amd-layout-dispatch.patch` | both | routes the trellis expert types (144/145/146) into the gfx906 64-lane/row layouts (`STRATA_EXP_MODE=1/2/4`). Measured with `native_expert_bench`: +3–6 % at one token per group, −63…−171 % at the 2–5-token groups a `--spec 4` verify produces, so it is a switch for a drafter-free or layer-split box, not a default. Mode 1 is also not bitwise equal. |
 | `optional/0007-qwen-gfx906-attn-query-swizzle-default.patch` | qwen | `STRATA_GFX906_ATTN_QUERY_SWIZZLE` on by default (unset = on, `0`/`false`/empty = off). Upstream's own bench made it worth offering: +14.6% on the QSA attention component, +1.19% prompt, −1.05% latency, token ids unchanged (`bench/results/2026-10-08-gfx906-qsa-query-swizzle`). |
 
 ## Adding a patch

@@ -1,4 +1,0 @@
-# gfx906 kernel arm: P11-7-dpp
-# native_expert_bench, /models/models/Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf layer 0, reference mode 0, median of 3
- 8 x 1  all    75.6 us  gu    49.5 us  down    23.0 us   NOT BITWISE
- 8 x 1  all    77.8 us  gu    51.1 us  down    22.0 us   NOT BITWISE

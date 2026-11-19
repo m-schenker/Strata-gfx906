@@ -1,7 +1,0 @@
-# gfx906 kernel arm: P11-5-addrspace
-# native_expert_bench, /models/models/Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf layer 0, reference mode 0, median of 3
- 8 x 1  all    76.4 us  gu    52.1 us  down    22.0 us   bitwise
-16 x 1  all   113.7 us  gu    77.7 us  down    39.8 us   bitwise
-16 x 2  all   136.2 us  gu    87.7 us  down    48.9 us   bitwise
-16 x 4  all   170.2 us  gu   111.2 us  down    61.1 us   bitwise
-32 x 1  all   202.7 us  gu   142.9 us  down    65.9 us   bitwise

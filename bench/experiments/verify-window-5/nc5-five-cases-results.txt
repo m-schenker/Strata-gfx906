@@ -1,9 +1,0 @@
-# native_expert_bench, IQ4_XS shard2 layer0, GPU 1, median of 3, iters 30
-# binary built with 0001 0002 only + the n==5 cases from nc5-five-cases.py
-# shape  all_us  gu_us  down_us  hash   (every hash equals the baseline binary's -> the cases are bitwise)
-16x4 245.8 187.8 59.5 a6e89f3bb9dd6ee9
-16x5 388.7 300.4 89.3 487b838a95b61c09
-16x6 411.2 318.2 93.5 e590b6e815dcec8f
-8x1  100.3  74.2 26.5 73175593e17fb371
-16x1 181.9 135.9 46.8 44e332aa7ec0b5b9
-32x1 340.3 256.3 84.4 f5336c63582c176d

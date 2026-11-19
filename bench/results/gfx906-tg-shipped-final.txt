@@ -1,4 +1,0 @@
-# gfx906 decode probe: shipped-final   2026-11-18T19:24:21+01:00
-rep 1: 65 tok 1.088 s, 129 tok 2.995 s -> decode 33.6 tok/s
-rep 2: 65 tok 1.035 s, 129 tok 2.987 s -> decode 32.8 tok/s
-rep 3: 65 tok 1.077 s, 129 tok 2.195 s -> decode 57.2 tok/s

@@ -1,8 +1,0 @@
-# gfx906 dot8 kit: LLM-NAS   2026-11-18T18:29:25+01:00
-# GPU[0]		: Card Series: 		N/A
-# weights: /home/polygon/config/models/mtp-Qwen3.8-Flash-Next-Q4_0.gguf
-# tool: tools/hip/gfx906_dot8_bench.cpp, one 64-lane wave per row, K 2560, 640 rows, median of 3
-groups    dp4a_ms    dot8_ms  gain_pct    err_dp4a  error_dot8
-8          0.0320     0.0205     +55.4       0.514       9.383
-16         0.0869     0.0356    +140.6       0.494       8.930
-32         0.1054     0.0708     +48.7       0.523       9.545

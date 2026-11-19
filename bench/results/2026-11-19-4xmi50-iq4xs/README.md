@@ -3,7 +3,7 @@
 Everything in this folder was measured on a **4× Instinct MI50 32 GB** box (gfx906, PCIe 4.0 ×16, one NUMA node per
 card), EPYC 7551P (64 threads, no AVX-512), 125 GiB RAM, AlmaLinux 10.2, kernel 6.12.0-211.68.1, with
 `Qwen3.8-Flash-Next-UD-IQ4_XS` (3 shards: IQ3_S gate/up, IQ4_NL/Q8_0 down, 512 experts top-10) and the same model in
-`Q8_0` (6 shards, 183 GB).  Method and verdicts: `m-schenker/gfx906/ROUND4-4XMI50.md`.
+`Q8_0` (6 shards, 183 GB).  Method and verdicts: `m-schenker/gfx906/MEASUREMENT-LEDGER.md` (rows for the trellis patches, dot8 and the L2 probe).
 
 **Read `engine-hang-0.2.15.txt` first** if you intend to run a suite round on an MI50: the 0.2.15 engine wedges the
 GPU at kernel-module load on this box, so none of the end-to-end numbers below exist.

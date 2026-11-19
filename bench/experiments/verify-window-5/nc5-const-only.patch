@@ -1,8 +1,0 @@
-# The invalid shortcut, kept as a warning: `GRP_NC = 5` alone drops the fifth entry of a 5-token group
-# (the `n == 4` fallback branch and the ED_NC sites still compute four).  The "36 % win" on 16x5 comes with a
-# changed output hash - see README.md §2 and nc5-const-only-results.txt.
---- a/src/kernels/cuda/iq_kernels.cu
-+++ b/src/kernels/cuda/iq_kernels.cu
-@@ -1973 +1973 @@
--constexpr int GRP_NC = 4;
-+constexpr int GRP_NC = 5;

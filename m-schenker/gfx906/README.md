@@ -304,12 +304,9 @@ Terminal. "[What this build is verified to do](REFERENCE.md#what-this-build-is-v
 - [added-source-files/src/dsv41/GFX906-CHANGES.md](added-source-files/src/dsv41/GFX906-CHANGES.md) — the six files of
   the vendored DeepSeek engine that carry gfx906 changes, and what each change does.
 - [patches/README.md](patches/README.md) — what each patch changes and why, which backend it belongs to, and how to add
-- [MEASUREMENT-LEDGER.md](MEASUREMENT-LEDGER.md) — **start here**: one page with every lever that was
-  implemented and measured on gfx906, the number that decided it, and where the detail lives (applied, optional,
-  blocked, and the traps that cost rounds)
-- [HANDOVER-4XMI50.md](HANDOVER-4XMI50.md) — the handover to a second box (4× MI50, IQ4_XS and Q8
-  models): what to validate, how, and the two open kernel problems (exact dot8, the 5-entry verify kernel)
-  one.
+- [MEASUREMENT-LEDGER.md](MEASUREMENT-LEDGER.md) — what this branch measured: the patches it ships with their numbers,
+  every lever that was tried and dropped with the number that decided it, what is blocked, the traps, and how each
+  number was taken.
 - [docs/AMD_HIP.md](../../docs/AMD_HIP.md#gfx906-instinct-mi50--mi60-radeon-vii-wave64-built-from-source) — the
   repository's gfx906 build recipe and switches.
 - `bench/results/` — the measurements quoted above, with provenance.
