@@ -18,7 +18,8 @@ There are four jobs, in this order:
 > **Done — 2026-11-19.**  This handover was worked on a 4× MI50 box with `Qwen3.8-Flash-Next-UD-IQ4_XS` and the same
 > model in `Q8_0`.  Results: `ROUND4-4XMI50.md` (report), `bench/results/2026-11-19-4xmi50-iq4xs/` (raw numbers, build
 > recipe, reproduction commands), `bench/experiments/verify-window-5/` (negative results), `PROPOSED-PR-EDITS.md`
-> (what to change in PR #1), `patches/optional/0013-both-alignas-llvm20.patch` (build fix for distro ROCm / clang 20).
+> (what to change in PR #1), `patches/0010-both-alignas-llvm20.patch` (build fix for distro ROCm / clang 20 — it came back as `optional/0013` and was
+> promoted to an applied patch, measured neutral on the first box).
 > Short version: jobs 1 and 2 are measured (the decode wins are TQ-only; dot8 reproduced and its Routes B/C closed);
 > job 3 is *located* but not landed (the 4+1 cliff is not trellis-specific; the 5-entry path belongs in
 > `native_gu_lds_kernel`/`native_down_lds_kernel`, and `GRP_NC = 5` alone is invalid); a full suite round is blocked
