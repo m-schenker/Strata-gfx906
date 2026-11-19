@@ -5,7 +5,7 @@ card), EPYC 7551P (64 threads, no AVX-512), 125 GiB RAM, AlmaLinux 10.2, kernel 
 `Qwen3.8-Flash-Next-UD-IQ4_XS` (3 shards: IQ3_S gate/up, IQ4_NL/Q8_0 down, 512 experts top-10) and the same model in
 `Q8_0` (6 shards, 183 GB).  Method and verdicts: `m-schenker/gfx906/MEASUREMENT-LEDGER.md` (rows for the trellis patches, dot8 and the L2 probe).
 
-**Read `engine-hang-0.2.15.txt` first** if you intend to run a suite round on an MI50: the 0.2.15 engine wedges the
+**Read `(removed: host-side, not this branch)` first** if you intend to run a suite round on an MI50: the 0.2.15 engine wedges the
 GPU at kernel-module load on this box, so none of the end-to-end numbers below exist.
 
 | file | what it is |
@@ -18,7 +18,7 @@ GPU at kernel-module load on this box, so none of the end-to-end numbers below e
 | `q8-expert-kernel.txt` | `native_expert_bench` on the Q8 model's `blk.9` (q8_0/q8_0) — the GPU expert path does accept it |
 | `rocblas-7.1.1.txt` | `tools/hip/tune_rocblas` on this card, rocBLAS 5.1.1: 210 rows, **199 with a solution**, best 7.08× |
 | `nc5-const-only-results.txt` | the `GRP_NC = 5` shortcut's numbers — **invalid** (drops the fifth entry), see `bench/experiments/verify-window-5/` |
-| `engine-hang-0.2.15.txt` | the gdb backtrace, the triggers and the workarounds |
+| `(removed: host-side, not this branch)` | the gdb backtrace, the triggers and the workarounds |
 
 ## Kernel matrix (IQ4_XS, layer 0, all-us, median of 3; `=` = FNV hash identical to baseline)
 
@@ -40,7 +40,7 @@ delta is inside ±1.3 % — the run-to-run band.  The 4+1 verify window is visib
 ## How the binaries were built
 
 The PR's Dockerfile builds the engine against TheRock 10.3 (that is where `rocblas_version=5.9.0` comes from).  That
-runtime hangs on this box (see `engine-hang-0.2.15.txt`), so the matrix was built against the **distro ROCm 7.1.1**
+runtime hangs on this box (see `(removed: host-side, not this branch)`), so the matrix was built against the **distro ROCm 7.1.1**
 (clang 20, rocBLAS 5.1.1) — the stack this box's `llama-rocm-docker:0.2` image serves with:
 
 ```sh
