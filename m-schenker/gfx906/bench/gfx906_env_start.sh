@@ -3,7 +3,7 @@
 # engine lines - the starting point for a probe that does not need the full suite.
 #
 #   bench/gfx906_env_start.sh PREFILL=8192 -- --ple-io mmap
-#   bench/gfx906_probe.py --words 2900 --reps 2
+#   m-schenker/gfx906/bench/gfx906_tg_probe.sh label 3
 #
 # Everything is environment-driven, same names as bench/gfx906_env_arm.sh (IMAGE, CONTAINER, PORT, MODELS_DIR, PACK_DIR,
 # MTP_DIR, DATA_DIR, GPU, ENGINE_ENV, EXTRA_ARGS).

@@ -6,8 +6,7 @@
 #   bench/gfx906_env_arm.sh tqstage  STRATA_TQ_STAGE=1 STRATA_EXP_MODE=1   # as many as the arm needs
 #
 # Why this exists: an engine environment variable cannot be changed in a running process, so an arm is a restart.  For a
-# native install that restart is `bench/gfx906_arm.py` (the run config's `env` block).  A container install restarts the
-# container instead, and this is that wrapper: same image, same mounts, one variable more.
+# container restart.  This is that wrapper: same image, same mounts, one variable more.
 #
 # Everything comes from the environment so this file stays box-agnostic:
 #   IMAGE=localhost/strata-gfx906:tune   CONTAINER=strata-arm   PORT=8095   RUNS=3
