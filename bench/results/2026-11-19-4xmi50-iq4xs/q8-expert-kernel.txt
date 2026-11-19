@@ -1,0 +1,3 @@
+hash 701ea71f092867c4
+layer  9 q8_0   /q8_0   G 16 T 1 | mode 0: all   164.8 us  gu   102.4 us (544 GB/s)  down   56.8 us (490 GB/s) | mode 0: all   161.0 us  gu   102.5 us (543 GB/s)  down   57.0 us (488 GB/s) | bitwise equal
+native_expert_bench: 0 differing

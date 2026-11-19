@@ -1,0 +1,26 @@
+# gfx906 dot8 kit — 4× MI50 32 GB, one card busy, TheRock 10.3 dev container (median of 3, iters 300)
+# tools/hip/gfx906_dot8_bench.cpp: one 64-lane wave per row, K 2560, 640 rows × G groups.
+# Real rows: a Q4_0 tensor made by tools/hip/gfx906_make_q4_0.py from THIS box's
+#   Qwen3.8-Flash-Next-Q8_0-00002-of-00006.gguf `output.weight` [2560, 248320] — 20480 rows, 29.5 MB,
+#   md5 8034118aebfbeda8c66bb0015695c1f5 (the tool reproduces it byte for byte).
+# Errors are relative RMS against an FP32 reference.  The hi/lo arm's error equals dp4a's on every
+#   shape — that is the exactness claim, not an average.
+
+## Real Q4_0 rows (from the Q8 model's output.weight)
+groups   dp4a ms   dot8 ms     gain  err dp4a  err dot8  hi/lo ms  hi/lo err
+     8    0.0343    0.0198   +73.2%    0.552%    9.378%    0.0309     0.552%
+    16    0.0887    0.0361  +145.7%    0.556%    8.928%    0.0432     0.556%
+    32    0.1075    0.0698   +54.0%    0.554%    9.549%    0.0779     0.554%
+
+## Synthetic uniform 4-bit weights
+groups   dp4a ms   dot8 ms     gain  err dp4a  err dot8  hi/lo ms  hi/lo err
+     8    0.0348    0.0198   +75.8%    0.579%    9.546%    0.0321     0.579%
+    16    0.0892    0.0361  +147.1%    0.565%    9.561%    0.0430     0.565%
+    32    0.1062    0.0694   +53.0%    0.563%    9.593%    0.0780     0.563%
+
+## The correction arms at 16 groups (single run; the tool prints them for one G)
+# dot8 + 0/4 residual  0.0363 ms  +142.9 % vs dp4a   9.561 %
+# dot8 + 1/4 residual  0.0496 ms   +77.9 %           8.378 %
+# dot8 + 2/4 residual  0.0481 ms   +83.3 %           7.021 %
+# dot8 + 4/4 residual  0.0405 ms  +117.7 %           0.875 %
+# dot8 hi/lo (exact)   0.0442 ms   +99.5 %           0.565 %   <- = the dp4a arm's error

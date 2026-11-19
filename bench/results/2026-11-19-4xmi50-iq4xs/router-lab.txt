@@ -1,0 +1,10 @@
+empty kernel <<<1,256>>>        1.587 us   (launch overhead, same geometry)
+A engine (32x8, 1 warp)        13.228 us   ids bitwise   worst weight delta 0
+B engine geometry, 1 warp      12.997 us   ids bitwise   worst weight delta 0
+C one 64-lane wave             11.587 us   ids same set   worst weight delta 0
+D sorted-per-lane local max    90.169 us   ids bitwise   worst weight delta 0
+E sort + merge tree            30.763 us   ids bitwise   worst weight delta 0
+F bitonic selection net        43.693 us   ids bitwise   worst weight delta 0
+G id packed in the key          7.815 us   ids same set   worst weight delta 4.02e-07
+H ballot tie-break              9.339 us   ids bitwise   worst weight delta 0
+
