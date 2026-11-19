@@ -155,3 +155,28 @@ IMAGE=... EXTRA_ENV=... bench/gfx906_env_arm.sh tqstage0 STRATA_TQ_STAGE=0     #
 podman run --rm --device /dev/kfd --device /dev/dri -v "$PWD":/work strata-gfx906:dev \
   bash -lc '/opt/rocm/llvm/bin/llvm-readelf --version >/dev/null && python3 /work/tools/hip/check_hip_spills.py --build /build'
 ```
+
+---
+
+## Round 4 — 4× MI50 32 GB, IQ4_XS + Q8 (2026-11-19)
+
+Full report: `ROUND4-4XMI50.md`.  Raw numbers, build recipe and reproduction commands:
+`bench/results/2026-11-19-4xmi50-iq4xs/`.  Negative results worth keeping: `bench/experiments/verify-window-5/`.
+
+| patch | IQ4_XS (kernel level, 8 shapes, bitwise) | verdict |
+|---|---|---|
+| `0005`, `0007`, `0008` | **0 effect, identical hash** — types 144-146 only | keep, TQ-only claim |
+| `0003`, `0004` | inert in the expert bench by design; the tuner on rocBLAS 5.1.1: 210 rows, **199** with a solution, best **7.08×** | keep, ship a table per rocBLAS build |
+| `0009` | router kernel on 512 experts/top-10: **13.23 → 9.35 µs (1.41×)**, ids and weights bitwise | keep |
+
+A suite round was **not obtainable**: the 0.2.15 engine wedges the GPU at kernel-module load on MI50
+(`bench/results/2026-11-19-4xmi50-iq4xs/engine-hang-0.2.15.txt`, gdb backtrace, both ROCm stacks).  The box's
+production 0.2.1 engine serves the same model and pack for days, so this is 0.2.15-specific.
+
+Two findings that change the plan for the follow-up work:
+
+* the **4+1 verify window is not trellis-specific** — on IQ4_XS, 16×5 costs **+59 %** over 16×4 (the trellis kernel's
+  `GRP_NC = 4` chunking, reproduced in the IQ path).  A 5-entry path must be added to `native_gu_lds_kernel`
+  (`iq_kernels.cu:5914`) / `native_down_lds_kernel` (:6674), not only to the trellis branches `optional/0012` touches;
+* **`GRP_NC = 5` alone is invalid** — it drops the fifth entry (16×5 "improves" 36 % and the output hash changes).
+  See `bench/experiments/verify-window-5/`.

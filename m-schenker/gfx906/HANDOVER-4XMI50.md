@@ -15,6 +15,15 @@ There are four jobs, in this order:
 | 3 | **Build the separate 5-entry verify kernel** | the measurement exists and points at exactly this kernel; it needs a machine that can hold both variants' occupancy budgets |
 | 4 | **Update PR #1** under the same rules this branch used | the PR is the deliverable; your numbers have to land in it the same way these did |
 
+> **Done — 2026-11-19.**  This handover was worked on a 4× MI50 box with `Qwen3.8-Flash-Next-UD-IQ4_XS` and the same
+> model in `Q8_0`.  Results: `ROUND4-4XMI50.md` (report), `bench/results/2026-11-19-4xmi50-iq4xs/` (raw numbers, build
+> recipe, reproduction commands), `bench/experiments/verify-window-5/` (negative results), `PROPOSED-PR-EDITS.md`
+> (what to change in PR #1), `patches/optional/0013-both-alignas-llvm20.patch` (build fix for distro ROCm / clang 20).
+> Short version: jobs 1 and 2 are measured (the decode wins are TQ-only; dot8 reproduced and its Routes B/C closed);
+> job 3 is *located* but not landed (the 4+1 cliff is not trellis-specific; the 5-entry path belongs in
+> `native_gu_lds_kernel`/`native_down_lds_kernel`, and `GRP_NC = 5` alone is invalid); a full suite round is blocked
+> on a 0.2.15 GPU-wedge that is captured with a backtrace.
+
 Read `m-schenker/gfx906/README.md` first (the branch's own map), then `IMPROVEMENTS.md` §1-§11 and
 `OPTIMIZATION-RESULTS.md`. Everything below assumes you have read the branch's own rules; they are restated in §1.5.
 

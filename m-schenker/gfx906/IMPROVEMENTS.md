@@ -557,3 +557,29 @@ problem on this card — all 64 lanes are already busy; what is wrong is the num
 a net regression, so it is not applied. Getting both sides needs the 5-entry path in a **separate kernel** that can
 carry the larger staging buffer without taking it from the 1-4 entry kernels — a new kernel plus a launcher branch on
 the window size, which is the next step this measurement points at rather than a template change.
+
+---
+
+## 12. Validation on a 4× MI50 box (IQ4_XS, Q8) — what transfers and what does not
+
+Full report and numbers: `ROUND4-4XMI50.md`, `bench/results/2026-11-19-4xmi50-iq4xs/`.
+
+**The decode wins in §1 are trellis-only.**  On `Qwen3.8-Flash-Next-UD-IQ4_XS` (IQ3_S gate/up, IQ4_NL down, 512 experts
+top-10) eight binaries — baseline plus one per shipped patch plus all six — produce **bitwise identical output with
+identical timings** at every expert shape (8×1, 16×1..6, 32×1; FNV hash per shape, ±1.3 %).  `0005`/`0007`/`0008` cannot
+fire on a format whose nibbles are codebook indices, and they do not.
+
+**What does transfer:** `0009` (router: 13.23 → 9.35 µs a call, 1.41×, ids and weights bitwise, on a 512-expert
+top-10 routing) and `0003`/`0004`'s mechanism (the tuner on this card and rocBLAS 5.1.1 finds a better-than-default
+solution for **199 of 210** shape/bucket rows, up to **7.08×** — the shipped 5.9.0 table is refused under 5.1.1, which
+is the version-pinning working as intended).
+
+**A correction to §11's framing:** the 4+1 verify-window cliff is the *kernel shape* (`GRP_NC = 4`), not the trellis
+format — on IQ4_XS, 16 groups × 5 tokens costs **+59 %** over 4 tokens.  A 5-entry path therefore has to be added to
+`native_gu_lds_kernel` / `native_down_lds_kernel` as well (the kernels an IQ pack runs), and `GRP_NC = 5` on its own is
+**not** a fix: it silently drops the fifth entry (`bench/experiments/verify-window-5/`).
+
+**Environment note:** the 0.2.15 engine wedges the GPU at kernel-module load on MI50 with a 200 K context
+(`hsa_executable_freeze` → `InvalidateCodeCaches` → `ExecutePM4` never returns, both TheRock 10.3 and ROCm 7.1.1), so
+no suite round was obtainable here.  `STRATA_WINDOW_WARM=0`, `--lookup-max-t 0` and ≤32 K context let one request
+through.  See `bench/results/2026-11-19-4xmi50-iq4xs/engine-hang-0.2.15.txt`.
