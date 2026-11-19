@@ -41,6 +41,7 @@ Each of these carries its measurement in the file header; the summary is `IMPROV
 | `0009-both-gfx906-dpp-warp-sum.patch` | 4 of 5 `ds_bpermute` replaced by DPP: the ISA change works, but gfx906 needs **two instruction slots** between a DPP and its consumer, and parity fails in the real kernel even with them | not applied |
 | `0010-both-mmvq-software-pipeline.patch` | weight prefetch in `native_mmvq_multi_kernel`: Q6_K +0.3 %, Q8_0 -2.0 %, Q4_0 -3.6 % | not applied |
 | `0012-both-trellis-5token-single-pass.patch` | chunk a group by 5 instead of 4 so a 5-token verify window is one pass over the weights: 16×5 258.4 → **193.6 µs (−25 %)**, bitwise — but the staging buffer grows 11.5 → 14.4 KB of LDS and 16×1/2/3/4 pay +11/+8/+7/+6 % | not applied (needs a separate kernel to get both sides) |
+| `0013-both-alignas-llvm20.patch` | `__shared__ alignas(16) int4 x[]` → `alignas(16) __shared__ int4 x[]` in the two expdec kernels: clang 20 (distro ROCm 7.1.1) rejects the first form ("alignas attribute cannot be applied to types"), TheRock 10.3's clang accepts both. Same alignment, same code object, no behaviour change | not applied (only needed to build the branch on a distro-ROCm box — see `ROUND4-4XMI50.md`) |
 | `0011-both-hyperconnection-double-quantize.patch` | the caller's second quantise skipped: 50.8 tok/s against 67.4 tok/s without it (same tree, `STRATA_GR_SPLIT=1`, both correct) | not applied |
 
 The gfx906 backend itself is part of the tree: `CMakeLists.txt` builds the CUDA targets through
