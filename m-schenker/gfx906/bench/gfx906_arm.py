@@ -12,7 +12,7 @@ the engine arguments and, in its `env` block, the engine's environment variables
 is a *file*, not a shell session:
 
     tuning/arm-<arm>.json     the base config with this arm's changes
-    bench/results/<date>-<gpu>-<arm>/   README.md + results.json, written by tools/strata_bench.py
+    m-schenker/gfx906/bench/results/<date>-<gpu>-<arm>/   README.md + results.json, written by tools/strata_bench.py
 
 `--arg` replaces a flag the base config already carries (by its name, value included) and appends a new one otherwise, so
 an arm can never end up with the same flag twice.  Nothing here is model- or card-specific: `--base` is whatever config
@@ -33,8 +33,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-BENCH = ROOT / "tools" / "strata_bench.py"
+ROOT = Path(__file__).resolve().parents[4]          # <checkout>: this file is m-schenker/gfx906/bench/x.py
+OUT = Path(__file__).resolve().parent / "results"   # results stay inside m-schenker/
+BENCH = ROOT / "tools" / "strata_bench.py"          # upstream's suite, unmodified
 FLAG_WITH_VALUE = True          # every engine flag this harness touches takes a value (kept simple on purpose)
 
 
@@ -85,7 +86,7 @@ def apply_args(cfg: dict, overrides: list[str]) -> list[str]:
 
 
 def result_dir(name: str) -> Path:
-    out = ROOT / "bench" / "results"
+    out = OUT
     hits = sorted(p for p in out.glob(f"*{name}*") if p.is_dir()) if out.is_dir() else []
     if not hits:
         sys.exit(f"no results folder matches {name!r} under {out}")
@@ -101,7 +102,7 @@ def main() -> int:
     ap.add_argument("--arg", action="append", default=[], metavar="'--flag VALUE'",
                     help="an engine argument for this arm, replacing the base's value of that flag (repeatable)")
     ap.add_argument("--runs", type=int, default=3, help="suite runs per test (default 3; 2 for a first look)")
-    ap.add_argument("--out", help="where the results folder goes (default bench/results)")
+    ap.add_argument("--out", help="where the results folder goes (default m-schenker/gfx906/bench/results)")
     ap.add_argument("--compare", nargs=2, metavar=("NEW", "OLD"),
                     help="print two existing result folders side by side and stop")
     ap.add_argument("--dry-run", action="store_true", help="write the arm config, print the engine args, run nothing")
@@ -150,7 +151,7 @@ def main() -> int:
     rc = subprocess.call(cmd)
     stamp = datetime.datetime.now().strftime("%Y-%m-%d")
     print(f"\narm {a.arm} done (rc {rc}). Compare with: bench/gfx906_arm.py --compare {a.arm} baseline")
-    print(f"results under bench/results/ ({stamp}-*)")
+    print(f"results under m-schenker/gfx906/bench/results/ ({stamp}-*)")
     return rc
 
 

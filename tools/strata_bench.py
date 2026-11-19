@@ -54,14 +54,6 @@ from agent_turns_bench import SYSTEM, TOOLS         # noqa: E402  the same agent
 import serve_load                                   # noqa: E402  the burst client for --clients
 
 SCHEMA = 1
-# The model name every request carries.  A Strata server ignores it, but a proxy in front of one (llama-swap, LiteLLM)
-# routes on it, so measuring through a proxy needs that proxy's own model id here (--model).
-MODEL = os.environ.get("STRATA_BENCH_MODEL", "strata")
-
-
-def set_model(name: str) -> None:
-    global MODEL
-    MODEL = name
 CHAT_MAX_TOKENS = 100
 LONG_MAX_TOKENS = 24
 AGENT_MAX_TOKENS = 64
@@ -145,7 +137,7 @@ def try_json(base, path, key="", timeout=20):
 def chat(base: str, key: str, messages: list, max_tokens: int, think: bool = False, tools=None, timeout: float = 3600) -> dict:
     """One streamed chat request -> {first, total, text, usage, timings, err}.  `first` is the seconds to the first
     non-empty content or reasoning piece (keep-alives and empty deltas ignored)."""
-    body = {"model": MODEL, "stream": True, "max_tokens": max_tokens, "temperature": 0, "messages": messages}
+    body = {"model": "strata", "stream": True, "max_tokens": max_tokens, "temperature": 0, "messages": messages}
     if tools:
         body["tools"] = tools
     if not think:
@@ -1039,8 +1031,6 @@ def main(argv=None) -> int:
     ap.add_argument("--port", type=int, help="the port to start the server on (default: the config's)")
     ap.add_argument("--gpu", help="start the server on this GPU only (as the server's --gpu)")
     ap.add_argument("--api-key", default=os.environ.get("STRATA_KEY", ""), help="the server's API key, if it has one (or STRATA_KEY)")
-    ap.add_argument("--model", default=MODEL, help="the model name to request (default: strata; behind llama-swap, that proxy's model id)")
-    ap.add_argument("--force", action="store_true", help="measure the server at --url even if it does not identify itself as Strata (a proxy in front of it)")
     ap.add_argument("--runs", type=int, default=3, help="runs per test (default 3)")
     ap.add_argument("--clients", type=int, default=0, metavar="N", help="also send N requests at once")
     ap.add_argument("--long", action="store_true", help="also a prompt of about 32,768 tokens")
@@ -1052,7 +1042,6 @@ def main(argv=None) -> int:
     ap.add_argument("--quiet", action="store_true")
     a = ap.parse_args(argv)
     say = (lambda *x, **k: None) if a.quiet else (lambda *x, **k: print(*x, **k, flush=True))
-    set_model(a.model)
 
     if a.compare_only:
         if not a.compare:
@@ -1088,8 +1077,6 @@ def main(argv=None) -> int:
     try:
         if is_strata(base, key):
             say(f"Using the Strata server already running at {base}.")
-        elif a.url and a.force:
-            say(f"Using the server at {base}: it does not identify itself as Strata (--force; e.g. behind llama-swap).")
         elif a.url:
             print(f"No Strata server answers at {base}.", file=sys.stderr)
             return 2

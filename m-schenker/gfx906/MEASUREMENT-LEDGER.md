@@ -5,6 +5,10 @@ implemented and measured and did **not** ship, with the number that decided it. 
 branch used while it was open (task list, follow-up queue, per-change write-ups, the second box's report); their content
 is here in the form that matters to someone reading the change.
 
+Everything this branch adds outside the patches lives under `m-schenker/gfx906/`: the scripts in `bench/`, the
+instruments in `m-schenker/gfx906/tools/hip/`, the result folders in `bench/results/`, the tables in `added-source-files/m-schenker/gfx906/tools/hip/`.
+No file outside `m-schenker/` is modified by the branch.
+
 Two boxes contributed: **A** = 1× MI50 32 GB, `Qwen3.8-Flash-Next-Gyro-M-TQ2_0` (512 experts top-10, TQ2_T experts, 48
 layers, `--spec 4` + MTP drafter). **B** = 4× MI50, `...-UD-IQ4_XS` (IQ3_S gate/up, IQ4_NL down) and the same model in
 Q8_0. Both gfx906, 60 CU, clocks pinned, card exclusive per measurement.
@@ -64,11 +68,11 @@ They are kept as numbers here rather than as patch files, so the tree carries no
 
 | lever | why it is closed |
 |---|---|
-| L2 residency / persisting cache for the hot expert set | **no API**: this HIP has no `hipDeviceAttributePersistingL2CacheSize` and no access-policy-window type. The per-layer hot set is 13.1 MB against an **8 MiB** L2, and the decode GEMV's measured bandwidth *rises* with footprint (63.6 → 597.9 GB/s from 1 → 52.4 MiB), i.e. occupancy-bound with no cache cliff to remove (`tools/hip/gfx906_l2_probe.cpp`) |
+| L2 residency / persisting cache for the hot expert set | **no API**: this HIP has no `hipDeviceAttributePersistingL2CacheSize` and no access-policy-window type. The per-layer hot set is 13.1 MB against an **8 MiB** L2, and the decode GEMV's measured bandwidth *rises* with footprint (63.6 → 597.9 GB/s from 1 → 52.4 MiB), i.e. occupancy-bound with no cache cliff to remove (`m-schenker/gfx906/tools/hip/gfx906_l2_probe.cpp`) |
 | four-lanes-in-one MMVQ packing | its target pattern (four 4-byte weight reads per lane) exists in this tree only for `tqp_states8`; every expert entry on box A is TQ2_T, whose reads are already coalesced, and the dense path is weight-bandwidth-bound |
 | wave64 GDN decode kernel | box A's model has no Gated Delta Net layers; the kernels and `bench/gdn_chunk_bench.cpp` are in the tree for a model that has |
 | bitonic / merge-tree / per-lane-sort routers | 33.0 / 34.0 / 92.4 µs against the engine's 16.2 µs: shortening the dependency chain *adds* work, the cost is instruction count |
-| `v_dot8_i32_i4` for IQ, trellis and Q8 packs | the nibbles are **codebook indices** (or 8-bit values), so index × index is meaningless; `tools/hip/gfx906_format_classes.py` reports **0.0 % of both of box B's models** can use dot8. The two candidate routes are closed with numbers: decoding the codebook into digits needs 4 passes (≈0.086 vs dp4a's 0.0887 ms), and linearising it reconstructs at 13.55 % vs today's 7.87 % |
+| `v_dot8_i32_i4` for IQ, trellis and Q8 packs | the nibbles are **codebook indices** (or 8-bit values), so index × index is meaningless; `m-schenker/gfx906/tools/hip/gfx906_format_classes.py` reports **0.0 % of both of box B's models** can use dot8. The two candidate routes are closed with numbers: decoding the codebook into digits needs 4 passes (≈0.086 vs dp4a's 0.0887 ms), and linearising it reconstructs at 13.55 % vs today's 7.87 % |
 
 ## 6. dot8: real, exact, and waiting for a value format
 
@@ -87,8 +91,8 @@ base-16 digits (`h = (q8 + 8) >> 4`, `l = q8 - 16h`, both representable 4-bit fi
 passes over the same weight nibbles reproduce **dp4a's integer result exactly** — same error to three decimals — at 2×
 dp4a's throughput where the ALU is the limit. So the 4-bit-activation penalty is gone for formats whose nibbles are
 **values** (Q4_0, Q4_1, Q4_K, including Q4_K's sub-block scales). A box with such a pack can finish it:
-`tools/hip/gfx906_dot8_bench.cpp` (all four arms), `bench/gfx906_dot8_kit.sh` (sweep + table),
-`tools/hip/gfx906_make_q4_0.py` (manufacture a Q4_0 tensor from a Q8_0 model), `tools/hip/gfx906_format_classes.py`
+`m-schenker/gfx906/tools/hip/gfx906_dot8_bench.cpp` (all four arms), `m-schenker/gfx906/bench/gfx906_dot8_kit.sh` (sweep + table),
+`m-schenker/gfx906/tools/hip/gfx906_make_q4_0.py` (manufacture a Q4_0 tensor from a Q8_0 model), `m-schenker/gfx906/tools/hip/gfx906_format_classes.py`
 (values vs indices per ggml type, with byte share). The quantiser produces `Fmt<2>`-style blocks, the trellis row-dot
 becomes a dot8 row-dot, and `STRATA_DOT8=1` gates it behind the format check.
 
@@ -104,7 +108,7 @@ window width.
 
 ## 8. Traps that cost this branch rounds
 
-1. **`/src` in the container is a copy** of the checkout, not a mount — sync before building (`bench/gfx906_build.sh`).
+1. **`/src` in the container is a copy** of the checkout, not a mount — sync before building (`m-schenker/gfx906/bench/gfx906_build.sh`).
 2. **The sync restores the unpatched sources** — re-apply `patches/*` every time; the same script does it.
 3. **`tar -x` does not delete**: a patch removed from the checkout stays in `/src` and is applied again. The scripts
    replace the patch folders now.
@@ -124,13 +128,13 @@ window width.
 
 | what | command / tool |
 |---|---|
-| the suite | `tools/strata_bench.py --url http://127.0.0.1:8095 --runs 3` (medians; results in `bench/results/`) |
-| one change per arm | `bench/gfx906_env_arm.sh <arm> VAR=value`, `bench/gfx906_patch_matrix.sh <arm> <patch numbers>` |
-| decode rate cheaply | `bench/gfx906_tg_probe.sh <label> <reps>` |
-| expert kernels, 8 shapes, bitwise | `bench/gfx906_kernel_bench.sh <label>` (`native_expert_bench`) |
-| spills / waves per kernel | `tools/hip/check_hip_spills.py --build /build` |
-| instruction counts | `tools/hip/gfx906_isa_count.py --kernel … --opcode …` |
-| router variants, parity | `tools/hip/gfx906_router_lab.cpp` |
-| dense projections + router timing | `tools/hip/gfx906_dense_bench.cpp` |
-| dot8 | `tools/hip/gfx906_dot8_bench.cpp`, `bench/gfx906_dot8_kit.sh` |
-| L2 residency | `tools/hip/gfx906_l2_probe.cpp` |
+| the suite | `tools/strata_bench.py --url http://127.0.0.1:8095 --runs 3` (medians; results in `m-schenker/gfx906/bench/results/`) |
+| one change per arm | `m-schenker/gfx906/bench/gfx906_env_arm.sh <arm> VAR=value`, `m-schenker/gfx906/bench/gfx906_patch_matrix.sh <arm> <patch numbers>` |
+| decode rate cheaply | `m-schenker/gfx906/bench/gfx906_tg_probe.sh <label> <reps>` |
+| expert kernels, 8 shapes, bitwise | `m-schenker/gfx906/bench/gfx906_kernel_bench.sh <label>` (`native_expert_bench`) |
+| spills / waves per kernel | `m-schenker/gfx906/tools/hip/check_hip_spills.py --build /build` |
+| instruction counts | `m-schenker/gfx906/tools/hip/gfx906_isa_count.py --kernel … --opcode …` |
+| router variants, parity | `m-schenker/gfx906/tools/hip/gfx906_router_lab.cpp` |
+| dense projections + router timing | `m-schenker/gfx906/tools/hip/gfx906_dense_bench.cpp` |
+| dot8 | `m-schenker/gfx906/tools/hip/gfx906_dot8_bench.cpp`, `m-schenker/gfx906/bench/gfx906_dot8_kit.sh` |
+| L2 residency | `m-schenker/gfx906/tools/hip/gfx906_l2_probe.cpp` |

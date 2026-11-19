@@ -4,7 +4,7 @@
 #   bench/gfx906_dot8_kit.sh                        # synthetic 4-bit matrix
 #   bench/gfx906_dot8_kit.sh --gguf /models/x.gguf  # real Q4_0 rows out of a GGUF (largest 2-D Q4_0 tensor)
 #
-# Writes bench/results/gfx906-dot8-<host>.txt and prints a summary to send back.  Needs only
+# Writes m-schenker/gfx906/bench/results/gfx906-dot8-<host>.txt and prints a summary to send back.  Needs only
 # tools/hip/gfx906_dot8_bench.cpp and a HIP compiler; by default it uses the dev container (`strata-dev`), and
 # RUN_ON_HOST=1 compiles and runs on the host instead (clang + ROCm on PATH).
 #
@@ -14,8 +14,12 @@
 # FP32 reference over the same weights and float activations, i.e. the activation-precision cost of the dot8 path.
 set -euo pipefail
 
+# this file lives in <checkout>/m-schenker/gfx906/bench, so the checkout root is three levels up and
+# results/logs sit next to the script (nothing outside m-schenker/ is written)
 here=$(cd "$(dirname "$0")" && pwd)
-repo=$(dirname "$here")
+repo=$(cd "$here/../../.." && pwd)
+outdir=$here/results
+tools=$repo/m-schenker/gfx906/tools/hip
 container=${RUN_CONTAINER:-strata-dev}
 gguf=""
 while [[ $# -gt 0 ]]; do
@@ -27,14 +31,14 @@ done
 
 host=$(hostname -s 2>/dev/null || echo host)
 card=$(rocm-smi --showproductname 2>/dev/null | grep -iE "series|gfx906" | head -1 || true)
-out=$repo/bench/results/gfx906-dot8-$host.txt
-mkdir -p "$repo/bench/results"
+out=$outdir/gfx906-dot8-$host.txt
+mkdir -p "$outdir"
 shapes=(8 16 32)
 
-podman cp "$repo/tools/hip/gfx906_dot8_bench.cpp" "$container:/tmp/gfx906_dot8_bench.cpp" >/dev/null
+podman cp "$tools/gfx906_dot8_bench.cpp" "$container:/tmp/gfx906_dot8_bench.cpp" >/dev/null
 [[ -n $gguf ]] && podman cp "$gguf" "$container:/tmp/dot8-weights.gguf" >/dev/null
 if [[ ${RUN_ON_HOST:-0} == 1 ]]; then
-    clang++ -x hip --offload-arch=gfx906 -O3 -o /tmp/gfx906_dot8_bench "$repo/tools/hip/gfx906_dot8_bench.cpp"
+    clang++ -x hip --offload-arch=gfx906 -O3 -o /tmp/gfx906_dot8_bench "$tools/gfx906_dot8_bench.cpp"
 fi
 
 run_once() {  # run_once <groups> -> the tool's output

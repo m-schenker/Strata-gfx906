@@ -20,12 +20,16 @@
 #   EXTRA_ENV='VAR=1 ...'      extra engine variables for this arm (e.g. STRATA_TQ_STAGE=0)
 #   MODELS_DIR / PACK_DIR / MTP_DIR / DATA_DIR   as in bench/gfx906_env_arm.sh (THIS box's layout is the default)
 #
-# Results: bench/results/matrix-<arm>/ (the suite writes its own folder name, this script renames it) and
+# Results: m-schenker/gfx906/bench/results/matrix-<arm>/ (the suite writes its own folder name, this script renames it) and
 # bench/logs/matrix-<arm>.log for the engine log of the arm.
 set -uo pipefail
 
+# this file lives in <checkout>/m-schenker/gfx906/bench, so the checkout root is three levels up and
+# results/logs sit next to the script (nothing outside m-schenker/ is written)
 here=$(cd "$(dirname "$0")" && pwd)
-repo=$(dirname "$here")
+repo=$(cd "$here/../../.." && pwd)
+outdir=$here/results
+tools=$repo/m-schenker/gfx906/tools/hip
 name=${1:?usage: gfx906_patch_matrix.sh <arm-name> [patch numbers...]}
 shift || true
 want=("$@")
@@ -63,15 +67,15 @@ podman cp "$container":/build/strata "$bin" || { say "build failed: no /build/st
 say "binary: $bin ($(md5sum "$bin" | cut -c1-12))"
 
 # ---- 3. serve it and run the suite
-mkdir -p "$repo/bench/logs"
+mkdir -p "$here/logs"
 rc=0
-before=$(ls -1dt "$repo"/bench/results/*/ 2>/dev/null | head -1)
+before=$(ls -1dt "$outdir"/*/ 2>/dev/null | head -1)
 ENGINE_BIN=$bin "$here/gfx906_env_arm.sh" "$name" || rc=$?
-after=$(ls -1dt "$repo"/bench/results/*/ 2>/dev/null | head -1)
+after=$(ls -1dt "$outdir"/*/ 2>/dev/null | head -1)
 if [ -n "$after" ] && [ "$after" != "$before" ]; then
     # never overwrite: an existing matrix-<name> may be *committed* evidence (this script used to rm -rf it, which
     # deletes a tracked result folder the first time anyone re-runs an arm with the same name)
-    dest=$repo/bench/results/matrix-$name
+    dest=$outdir/matrix-$name
     [ -e "$dest" ] && dest=$dest-$(date +%Y%m%d-%H%M%S)
     mv "$after" "$dest"
     cp "$repo/run/logs/arm-$name.log" "$dest/engine.log" 2>/dev/null

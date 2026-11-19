@@ -10,15 +10,19 @@
 # before timing.  Median of REPS.  tools/strata_bench.py is still the number of record for a full round; this is for arms
 # that only move the decode path.
 set -uo pipefail
+# this file lives in <checkout>/m-schenker/gfx906/bench, so the checkout root is three levels up and
+# results/logs sit next to the script (nothing outside m-schenker/ is written)
 here=$(cd "$(dirname "$0")" && pwd)
-repo=$(dirname "$here")
+repo=$(cd "$here/../../.." && pwd)
+outdir=$here/results
+tools=$repo/m-schenker/gfx906/tools/hip
 label=${1:?usage: gfx906_tg_probe.sh LABEL [REPS]}
 reps=${2:-3}
 port=${PORT:-8095}
 key=$(cat "$repo/run/state/api-key")
 base_prompt=${TG_PROMPT:-"Count from 1 to 60 in words, one per line."}
-out=$repo/bench/results/gfx906-tg-$label.txt
-mkdir -p "$repo/bench/results"
+out=$outdir/gfx906-tg-$label.txt
+mkdir -p "$outdir"
 tmp_body=$(mktemp)
 
 ask() {  # ask <max_tokens> -> "<completion_tokens> <elapsed_seconds>"

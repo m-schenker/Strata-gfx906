@@ -23,7 +23,7 @@
 #   GPU=0,1,2,3                                       every card, for a multi-GPU arm
 #
 # The suite is tools/strata_bench.py over HTTP (--url), so the numbers come from the engine's own timings.  Results go to
-# bench/results/<date>-<gpu>-<model>/ ; the first arm should be named `baseline` and later arms are compared against it.
+# m-schenker/gfx906/bench/results/<date>-<gpu>-<model>/ ; the first arm should be named `baseline` and later arms are compared against it.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
@@ -97,18 +97,19 @@ args=(--url "http://127.0.0.1:$PORT" --runs "$RUNS")
 
 "$PODMAN" logs "$CT" > "$DATA_DIR/logs/arm-$name.log" 2>&1
 say "running: tools/strata_bench.py ${args[*]}"
-before=$(ls -1dt "$ROOT"/bench/results/*/ 2>/dev/null | head -1)
-python3 tools/strata_bench.py "${args[@]}" 2>&1 | tail -22
+mkdir -p "$outdir"
+before=$(ls -1dt "$outdir"/*/ 2>/dev/null | head -1)
+python3 "$repo/tools/strata_bench.py" "${args[@]}" 2>&1 | tail -22
 rc=${PIPESTATUS[0]}
-after=$(ls -1dt "$ROOT"/bench/results/*/ 2>/dev/null | head -1)
+after=$(ls -1dt "$outdir"/*/ 2>/dev/null | head -1)
 if [ -n "$after" ] && [ "$after" != "$before" ]; then      # the bench names folders by date+gpu+model: give it the arm's
-  rm -rf "$ROOT/bench/results/arm-$name"
-  mv "$after" "$ROOT/bench/results/arm-$name"
-  say "results: bench/results/arm-$name"
+  rm -rf "$outdir/arm-$name"
+  mv "$after" "$outdir/arm-$name"
+  say "results: m-schenker/gfx906/bench/results/arm-$name"
 fi
 
 "$PODMAN" logs "$CT" > "$DATA_DIR/logs/arm-$name.log" 2>&1
 "$PODMAN" stop "$CT" >/dev/null 2>&1
 say "arm $name done (rc $rc); engine log: $DATA_DIR/logs/arm-$name.log"
-say "compare: tools/strata_bench.py --compare-only bench/results/arm-$name --compare bench/results/arm-baseline"
+say "compare: tools/strata_bench.py --compare-only m-schenker/gfx906/bench/results/arm-$name --compare m-schenker/gfx906/bench/results/arm-baseline"
 exit "$rc"

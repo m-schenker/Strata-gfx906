@@ -95,7 +95,3 @@ node_modules/
 /build-spark/
 /build-vision-spark/
 /.venv-build/
-
-# per-box run state: run/state/api-key is a live bearer token, run/config/strata.json is this machine's
-# serve config and run/tmp/devices.txt is device noise.  None of them belongs in the repository.
-run/

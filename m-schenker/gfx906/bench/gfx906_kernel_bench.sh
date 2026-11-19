@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # bench/gfx906_kernel_bench.sh - kernel-level arm for the gfx906 instruction levers.
 #
-#   bench/gfx906_kernel_bench.sh BASELINE            # write bench/results/gfx906-kernel-baseline.txt
+#   m-schenker/gfx906/bench/gfx906_kernel_bench.sh BASELINE   # write bench/results/gfx906-kernel-baseline.txt
 #   bench/gfx906_kernel_bench.sh LABEL               # compare against the baseline file
 #
 # Runs native_expert_bench on the real Gyro-M pack at the shapes a decode step produces (see `--spec 4` in
@@ -12,14 +12,18 @@
 # Environment: RUN_CONTAINER (default strata-dev), BENCH_MODEL (the pack to read), BENCH_LAYERS (default 0).
 set -euo pipefail
 
+# this file lives in <checkout>/m-schenker/gfx906/bench, so the checkout root is three levels up and
+# results/logs sit next to the script (nothing outside m-schenker/ is written)
 here=$(cd "$(dirname "$0")" && pwd)
-repo=$(dirname "$here")
+repo=$(cd "$here/../../.." && pwd)
+outdir=$here/results
+tools=$repo/m-schenker/gfx906/tools/hip
 container=${RUN_CONTAINER:-strata-dev}
 model=${BENCH_MODEL:-/models/models/Qwen3.8-Flash-Next-Gyro-M-TQ2_0.gguf}
 layers=${BENCH_LAYERS:-0}
 label=${1:?usage: gfx906_kernel_bench.sh BASELINE|LABEL}
-out=$repo/bench/results/gfx906-kernel-$label.txt
-mkdir -p "$repo/bench/results"
+out=$outdir/gfx906-kernel-$label.txt
+mkdir -p "$outdir"
 
 # shape: groups x tokens (a decode step's expert call: 8-32 groups, 1..4 tokens each)
 shapes=("8 1" "16 1" "16 2" "16 3" "16 4" "16 5" "16 6" "32 1")
@@ -60,9 +64,9 @@ run() {  # run <groups> <tokens> -> "all gu down" medians of 3, plus the parity 
     for s in "${shapes[@]}"; do run $s; done
 } | tee "$out"
 
-if [[ $label != BASELINE && -f $repo/bench/results/gfx906-kernel-baseline.txt ]]; then
+if [[ $label != BASELINE && -f $outdir/gfx906-kernel-baseline.txt ]]; then
     echo
     echo "delta against bench/results/gfx906-kernel-baseline.txt:"
-    paste <(grep -E '^ *[0-9]+ x' "$repo/bench/results/gfx906-kernel-baseline.txt") <(grep -E '^ *[0-9]+ x' "$out") |
+    paste <(grep -E '^ *[0-9]+ x' "$outdir/gfx906-kernel-baseline.txt") <(grep -E '^ *[0-9]+ x' "$out") |
     awk -F'[ x]+' '{ b=$4; n=$11; if (b > 0) printf "  %2s x %s  %7.1f -> %7.1f us  %+6.1f %%\n", $1,$2,b,n,100*(b/n-1) }' 2>/dev/null || true
 fi

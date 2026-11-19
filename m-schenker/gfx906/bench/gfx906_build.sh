@@ -10,8 +10,12 @@
 # cost one round: a change measured "no effect" because it was never compiled).  Sync first, always.
 set -euo pipefail
 
+# this file lives in <checkout>/m-schenker/gfx906/bench, so the checkout root is three levels up and
+# results/logs sit next to the script (nothing outside m-schenker/ is written)
 here=$(cd "$(dirname "$0")" && pwd)
-repo=$(dirname "$here")
+repo=$(cd "$here/../../.." && pwd)
+outdir=$here/results
+tools=$repo/m-schenker/gfx906/tools/hip
 container=${RUN_CONTAINER:-strata-dev}
 target=${*:-native_expert_bench}
 
