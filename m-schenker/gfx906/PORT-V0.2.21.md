@@ -70,9 +70,11 @@ Estimated expert traffic ~1.5 GB/token → achieved bandwidth ~80 GB/s, only ~8%
 E2M1→FP16 decode (the LUT was already LDS-cached), 2-block memory-level parallelism, and inline weight decode on both the
 grouped and direct MoE kernels. Inner-loop ALU/LDS/MLP changes do not move a memory-bound kernel.
 
-**Next lever (not yet done):** raise achieved DRAM bandwidth — the bottleneck is memory access, so the win must come from
-more outstanding reads / better coalescing / fewer larger launches (fuse the per-visit MoE + attention), not from the dot
-inner loop. `fdot2`/`sdot4` are native on gfx906 (verified in ISA), so the compute path is already efficient.
+**Applied (patch 0005):** clocks confirmed full during decode (mclk 1000 / sclk 1725 MHz, no throttling); the limit is
+memory concurrency — VGPR=84 held the MoE w13 GEMV to ~3 waves/SIMD. `__launch_bounds__(256, 8)` on `k_moe_direct_w13_situ`
+raises occupancy: **decode 53.3 -> 57.7 tok/s (+8%)**, selfcheck PASS. Applying the same to the other decode kernels gave no
+further gain (reverted). **Remaining headroom:** still ~7-8% of DRAM peak; a larger win needs wider loads / fused per-visit
+launches, not inner-loop tweaks. `fdot2`/`sdot4` are native on gfx906 (verified in ISA).
 
 ## What still needs testing / work
 
