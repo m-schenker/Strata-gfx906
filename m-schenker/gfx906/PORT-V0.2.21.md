@@ -58,6 +58,22 @@ the native distro runtime is 7.2 with data, so a host-native run works; in the 7
   quants are **GGUF**, but `strata-hy4` reads **.strata only** (`--model SQ64.strata --engram Engram-Q8.strata`), so they would
   need packing first. No smaller `.strata` exists → runtime test skipped per owner; build is done.
 
+
+## Inkling gfx906 speed — baseline + profiling (optimization in progress)
+
+Baseline on MI50, Inkling-2-Mini SQ-10 (hidden 2304, inter 1152, top_k 8, 48 visits): **decode ~53 tok/s, prefill ~50 tok/s**.
+rocprofv3 kernel trace: decode time is spread across many kernels — `k_moe_direct_w13_situ` ~13%, `k_moe_direct_w2_par` ~8%,
+`k_bf16_fdot2_tiled` ~13%, `k_unembed_softcap` ~5.5%, attention GEMVs ~15%. GPU is 100% busy at ~180 W.
+
+Estimated expert traffic ~1.5 GB/token → achieved bandwidth ~80 GB/s, only ~8% of MI50's ~1 TB/s. So decode is
+**memory-bound with poor bandwidth utilization**, NOT compute/LDS bound. Tried and **reverted (all neutral)**: branchless
+E2M1→FP16 decode (the LUT was already LDS-cached), 2-block memory-level parallelism, and inline weight decode on both the
+grouped and direct MoE kernels. Inner-loop ALU/LDS/MLP changes do not move a memory-bound kernel.
+
+**Next lever (not yet done):** raise achieved DRAM bandwidth — the bottleneck is memory access, so the win must come from
+more outstanding reads / better coalescing / fewer larger launches (fuse the per-visit MoE + attention), not from the dot
+inner loop. `fdot2`/`sdot4` are native on gfx906 (verified in ISA), so the compute path is already efficient.
+
 ## What still needs testing / work
 
 1. **deepseek runtime: DONE.** Downloaded the ISTA IQ2_XXS + Engram (171 GB), packed with `pack_gguf.py` (24244 tensors), and
