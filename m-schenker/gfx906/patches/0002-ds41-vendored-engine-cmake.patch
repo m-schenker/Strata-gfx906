@@ -1,0 +1,32 @@
+# backend: both
+# gfx906 v0.2.21: wire the vendored DeepSeek-V4.1 engine (strata-dsv41) into engine/CMakeLists.txt, and force
+#   ggml-base/ggml-cpu to build when STRATA_BUILD_DSV41=ON (the dsv41 CPU lane needs ggml-cpu.h; a release build
+#   with STRATA_OWN_CPU_QUANT=ON otherwise builds no ggml). Source re-vendored under added-source-files/engine/src/dsv41.
+diff --git a/engine/CMakeLists.txt b/engine/CMakeLists.txt
+index fed5f715..7b866001 100644
+--- a/engine/CMakeLists.txt
++++ b/engine/CMakeLists.txt
+@@ -715,6 +715,14 @@ strata_gpu_engine()
+ 
+ strata_cpu_kernels()
+ 
++# m-schenker gfx906: the vendored DeepSeek-V4.1 engine (strata-dsv41). Upstream removed the DeepSeek engine in v0.2.14;
++# this container re-vendors it (added-source-files/engine/src/dsv41) and builds it for gfx906. No-op unless the vendored
++# cmake module is present and STRATA_BUILD_DSV41=ON.
++if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_dsv41.cmake)
++  include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_dsv41.cmake)
++  strata_dsv41_engine()
++endif()
++
+ # ---- plan v0.3 P6: the i-quant models' CPU experts (IQ2_XS / IQ3_XXS files) ----
+ #
+ # The CPU computes a native expert with ggml-cpu's own dot products (`ggml_get_type_traits_cpu`), so an IQ
+@@ -726,7 +734,7 @@ if(STRATA_NATIVE_EXPERTS)
+   enable_language(C)
+   # ggml-base / ggml-cpu only where something links them: the tests (ggml as the oracle) and the ggml-cpu pool (STRATA_OWN_CPU_QUANT=OFF).
+   # A release engine (tests off, Strata's own pool) configures, builds and links no ggml; the ggml tools below exist only with it.
+-  if(STRATA_BUILD_TESTS OR NOT STRATA_OWN_CPU_QUANT)
++  if(STRATA_BUILD_TESTS OR NOT STRATA_OWN_CPU_QUANT OR STRATA_BUILD_DSV41)
+     strata_ggml_configure_root()
+   else()
+     set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)   # (what strata_ggml_configure_root sets for the whole project)
