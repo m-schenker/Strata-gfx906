@@ -1,0 +1,28 @@
+# backend: both
+# gfx906 v0.2.21: inkling's GPU plug-in is NVIDIA-only (sm_70..sm_121a, Blackwell FP4 tensor cores). Under
+#   STRATA_HIP_GFX906 skip the CUDA plug-in + cuda/ subfolder so strata-inkling builds its CPU core (force_cpu).
+#   A gfx906 GPU backend for inkling is a separate port (the FP4 expert kernels have no wave64 equivalent yet).
+diff --git a/engine/src/inkling2/CMakeLists.txt b/engine/src/inkling2/CMakeLists.txt
+index 0c51a683..df7b47ee 100644
+--- a/engine/src/inkling2/CMakeLists.txt
++++ b/engine/src/inkling2/CMakeLists.txt
+@@ -190,7 +190,9 @@ if(STRATA_BUILD_TESTS)
+ endif()
+ 
+ # Optional GPU backend plug-ins (automatically wired when backend lane lands its subfolder!)
+-if(STRATA_ENABLE_CUDA)
++# m-schenker gfx906: the CUDA plug-in below is NVIDIA-only (sm_70..sm_121a, Blackwell FP4 TC); on gfx906 it is skipped
++# and strata-inkling runs its CPU core (force_cpu). A gfx906 GPU backend is a separate port.
++if(STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)
+   if(MSVC AND NOT DEFINED CMAKE_CUDA_RUNTIME_LIBRARY)
+     set(CMAKE_CUDA_RUNTIME_LIBRARY Shared)
+   endif()
+@@ -234,7 +236,7 @@ if(STRATA_ENABLE_CUDA)
+   target_link_libraries(strata-inkling PRIVATE strata_inkling_ep_cuda)
+   target_compile_definitions(strata-inkling PRIVATE INKLING_ENABLE_EP_CUDA=1)
+ endif()
+-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cuda/CMakeLists.txt" AND STRATA_ENABLE_CUDA)
++if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cuda/CMakeLists.txt" AND STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)
+   add_subdirectory(cuda)
+ endif()
+ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/hip/CMakeLists.txt" AND STRATA_ENABLE_HIP)
