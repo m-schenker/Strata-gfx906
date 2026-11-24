@@ -44,7 +44,7 @@ the native distro runtime is 7.2 with data, so a host-native run works; in the 7
 |---|---|---|---|---|
 | qwen | `strata` | ✅ | ✅ served Gyro-M TQ2_0; 4K/16K, 0 crashes | reuse existing model |
 | deepseek | `strata-dsv41` | ✅ | ✅ packed ISTA IQ2_XXS + 8-token gen on MI50 (0.74 tok/s cold-stream) | re-vendored; `pack_gguf.py` → `--pack` |
-| hy4 | `strata-hy4` | ✅ | ⏳ model downloading (SQ-64 + Engram) | reads **.strata**, not GGUF; smallest SQ-64 = 62 GB + Engram 67.6 GB |
+| hy4 | `strata-hy4` | ✅ | ✅ SQ-64 + Engram, 8-token gen on MI50 (1.43 tok/s cold-stream) | reads **.strata**; hybrid CPU+GPU experts |
 | inkling | `strata-inkling` | ✅ (HIP backend) | ✅ `--selfcheck --gpu` PASS + 8-token GPU gen **33.9 tok/s** on SQ-10 | multi-gen HIP backend compiled for gfx906 (wave64); CPU fallback also works |
 
 ## Models / storage (32 GB VRAM, 34 GB RAM; /home 137 GB free, 256 GB drive 222 GB free)
@@ -63,8 +63,8 @@ the native distro runtime is 7.2 with data, so a host-native run works; in the 7
 1. **deepseek runtime: DONE.** Downloaded the ISTA IQ2_XXS + Engram (171 GB), packed with `pack_gguf.py` (24244 tensors), and
    generated 8 tokens on the MI50 (`--pack … --gpus 0 --mmap-experts on`). Slow cold-cache streaming (~0.74 tok/s) — fine for a
    functional check; a quality/long-context pass is still owed.
-2. **hy4 runtime (optional):** download SQ-64 + Engram (130 GB, fits the drive) and run a few-token gen; or pack a Maya GGUF to
-   `.strata`. Not done per owner (no smaller quant).
+2. **hy4 runtime: DONE.** Downloaded SQ-64 (62 GB) + Engram-Q8 (67.6 GB), generated 8 tokens on the MI50 (`--model … --engram …
+   --tokens … --gen 8 --gpus 0`). Slow cold-cache hybrid path (~1.43 tok/s); a warm-cache/quality pass is still owed.
 3. **inkling GPU backend: DONE.** The multi-gen HIP backend compiles for gfx906 (wave64) with the `alignas` fix; its width-32
    shuffle reductions run on 32-lane segments (correct on wave64). `--selfcheck --gpu` PASS and 33.9 tok/s on SQ-10. The NVIDIA
    FP4 CUDA plug-in stays skipped (no gfx906 equivalent); the HIP backend is the gfx906 path.
