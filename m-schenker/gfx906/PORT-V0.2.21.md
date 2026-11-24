@@ -43,7 +43,7 @@ the native distro runtime is 7.2 with data, so a host-native run works; in the 7
 | backend | binary | builds gfx906 | validated | notes |
 |---|---|---|---|---|
 | qwen | `strata` | ✅ | ✅ served Gyro-M TQ2_0; 4K/16K, 0 crashes | reuse existing model |
-| deepseek | `strata-dsv41` | ✅ | ⏳ model downloading | re-vendored; ISTA-DASLab GSQ-RCO-Coder IQ2_XXS (arch `deepseek41`) |
+| deepseek | `strata-dsv41` | ✅ | ✅ packed ISTA IQ2_XXS + 8-token gen on MI50 (0.74 tok/s cold-stream) | re-vendored; `pack_gguf.py` → `--pack` |
 | hy4 | `strata-hy4` | ✅ | ⏳ model downloading (SQ-64 + Engram) | reads **.strata**, not GGUF; smallest SQ-64 = 62 GB + Engram 67.6 GB |
 | inkling | `strata-inkling` | ✅ (HIP backend) | ✅ `--selfcheck --gpu` PASS + 8-token GPU gen **33.9 tok/s** on SQ-10 | multi-gen HIP backend compiled for gfx906 (wave64); CPU fallback also works |
 
@@ -60,9 +60,9 @@ the native distro runtime is 7.2 with data, so a host-native run works; in the 7
 
 ## What still needs testing / work
 
-1. **deepseek runtime:** finish the 183 GB download, then **pack** the GGUF with the vendored `tools/dsv41/pack_gguf.py`
-   (dsv41 reads the `maya-ds4` pack via `--pack`, not raw GGUF), then run a few-token gen / `--serve`. Confirm the
-   GSQ-RCO-Coder expert layout loads (arch `deepseek41` confirmed in the GGUF metadata).
+1. **deepseek runtime: DONE.** Downloaded the ISTA IQ2_XXS + Engram (171 GB), packed with `pack_gguf.py` (24244 tensors), and
+   generated 8 tokens on the MI50 (`--pack … --gpus 0 --mmap-experts on`). Slow cold-cache streaming (~0.74 tok/s) — fine for a
+   functional check; a quality/long-context pass is still owed.
 2. **hy4 runtime (optional):** download SQ-64 + Engram (130 GB, fits the drive) and run a few-token gen; or pack a Maya GGUF to
    `.strata`. Not done per owner (no smaller quant).
 3. **inkling GPU backend: DONE.** The multi-gen HIP backend compiles for gfx906 (wave64) with the `alignas` fix; its width-32
