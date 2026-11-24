@@ -1,0 +1,500 @@
+# backend: both
+# gfx906 v0.2.21: clang-20 (distro ROCm) rejects '__shared__ alignas(16) T x[]'; reorder to 'alignas(16) __shared__ T x[]'
+#   in the inkling HIP backend (same portability fix as the 0.1.61 port's 0006). Same alignment, same code object.
+diff --git a/engine/src/inkling2/hip/ink_hip_codecs.hip.h b/engine/src/inkling2/hip/ink_hip_codecs.hip.h
+index 66debc5d..e9aa4cf7 100644
+--- a/engine/src/inkling2/hip/ink_hip_codecs.hip.h
++++ b/engine/src/inkling2/hip/ink_hip_codecs.hip.h
+@@ -821,8 +821,8 @@ __global__ void __launch_bounds__(128) k_sf4_wmma_f16(
+     constexpr int MTW = (BM / W_M) / 16;
+     constexpr int NTW = (BN / W_N) / 16;
+ 
+-    __shared__ alignas(16) half_t sX[BM * LD];
+-    __shared__ alignas(16) half_t sW[BN * LD];
++    alignas(16) __shared__ half_t sX[BM * LD];
++    alignas(16) __shared__ half_t sW[BN * LD];
+ 
+     const int tid = threadIdx.x;
+     const int wave = tid >> 5;
+@@ -941,8 +941,8 @@ __global__ void __launch_bounds__(128) k_sf4_wmma_i8_gfx12(
+     constexpr int MTW = (BM / W_M) / 16;
+     constexpr int NTW = (BN / W_N) / 16;
+ 
+-    __shared__ alignas(16) int8_t sXq[BM * LD];
+-    __shared__ alignas(16) int8_t sWq[BN * LD];
++    alignas(16) __shared__ int8_t sXq[BM * LD];
++    alignas(16) __shared__ int8_t sWq[BN * LD];
+     __shared__ float sXd[BM];
+     __shared__ float sWs[BN];
+ 
+@@ -1075,8 +1075,8 @@ __global__ void __launch_bounds__(128) k_sf4_sdot4_tiled(
+     float* __restrict__ Y,
+     int M, int N, int K) {
+     // 128 threads = 4 waves, each thread computes TM x TN outputs over K in 16-element blocks using sdot4_i32!
+-    __shared__ alignas(16) int sXq[BM * 4];  // [BM][4 int32 = 16 int8]
+-    __shared__ alignas(16) int sWq[BN * 4];  // [BN][4 int32 = 16 int8]
++    alignas(16) __shared__ int sXq[BM * 4];  // [BM][4 int32 = 16 int8]
++    alignas(16) __shared__ int sWq[BN * 4];  // [BN][4 int32 = 16 int8]
+     __shared__ float sXd[BM];
+     __shared__ float sWs[BN];
+ 
+@@ -1257,8 +1257,8 @@ __global__ void __launch_bounds__(128) k_mx8_wmma_f16(
+     constexpr int MTW = (BM / W_M) / 16;
+     constexpr int NTW = (BN / W_N) / 16;
+ 
+-    __shared__ alignas(16) half_t sX[BM * LD];
+-    __shared__ alignas(16) half_t sW[BN * LD];
++    alignas(16) __shared__ half_t sX[BM * LD];
++    alignas(16) __shared__ half_t sW[BN * LD];
+     __shared__ half_t s_e4m3[256];
+ 
+     const int tid = threadIdx.x;
+@@ -1363,8 +1363,8 @@ __global__ void __launch_bounds__(128) k_mx8_fdot2_tiled(
+     float* __restrict__ Y,
+     int M, int N, int K) {
+     constexpr int BK = 32;
+-    __shared__ alignas(16) half_t sX[BM * BK];
+-    __shared__ alignas(16) half_t sW[BN * BK];
++    alignas(16) __shared__ half_t sX[BM * BK];
++    alignas(16) __shared__ half_t sW[BN * BK];
+     __shared__ half_t s_e4m3[256];
+ 
+     const int tid = threadIdx.x;
+@@ -1528,8 +1528,8 @@ __global__ void __launch_bounds__(128) k_sk_wmma_f16(
+     constexpr int MTW = (BM / W_M) / 16;
+     constexpr int NTW = (BN / W_N) / 16;
+ 
+-    __shared__ alignas(16) half_t sX[BM * LD];
+-    __shared__ alignas(16) half_t sW[BN * LD];
++    alignas(16) __shared__ half_t sX[BM * LD];
++    alignas(16) __shared__ half_t sW[BN * LD];
+ 
+     const int tid = threadIdx.x;
+     const int wave = tid >> 5;
+@@ -1724,7 +1724,7 @@ __global__ void __launch_bounds__(256) k_bf16_gemv1_lds(
+     const int lane = tid & 31;
+     const int row = blockIdx.x * 8 + wave;
+ 
+-    __shared__ alignas(16) float sX[4096];
++    alignas(16) __shared__ float sX[4096];
+     const int k4 = K >> 2;
+     const float4* x4 = reinterpret_cast<const float4*>(X);
+     float4* sx4 = reinterpret_cast<float4*>(sX);
+@@ -1783,7 +1783,7 @@ __global__ void __launch_bounds__(256) k_bf16_gemv1_qkvrg(
+     const int lane = tid & 31;
+     const int row = blockIdx.x * 8 + wave;
+ 
+-    __shared__ alignas(16) float sX[4096];
++    alignas(16) __shared__ float sX[4096];
+     const int k4 = K >> 2;
+     const float4* x4 = reinterpret_cast<const float4*>(X);
+     float4* sx4 = reinterpret_cast<float4*>(sX);
+@@ -1863,7 +1863,7 @@ __global__ void __launch_bounds__(256) k_bf16_gemv1_wo_sconv(
+     const int lane = tid & 31;
+     const int row = blockIdx.x * 8 + wave;
+ 
+-    __shared__ alignas(16) float sX[4096];
++    alignas(16) __shared__ float sX[4096];
+     const int k4 = K >> 2;
+     const float4* x4 = reinterpret_cast<const float4*>(X);
+     float4* sx4 = reinterpret_cast<float4*>(sX);
+@@ -2027,7 +2027,7 @@ __global__ void __launch_bounds__(256) k_bf16_gemv_lds_fdot2(
+     const int row = blockIdx.x * 8 + wave;
+     const uint16_t* wr = (row < N) ? (W + static_cast<size_t>(row) * K) : nullptr;
+ 
+-    __shared__ alignas(16) half_t sX[MT * 256];
++    alignas(16) __shared__ half_t sX[MT * 256];
+     float acc[MT];
+ #pragma unroll
+     for (int m = 0; m < MT; ++m) acc[m] = 0.0f;
+@@ -2159,8 +2159,8 @@ __global__ void __launch_bounds__((BN == 64) ? 128 : 64) k_bf16_wmma_bf16_16xN(
+ #if INK_HAS_WMMA
+     constexpr int BM = 16, BK = 64, LD = BK + 8;
+     constexpr int NTHREADS = (BN == 64) ? 128 : 64;
+-    __shared__ alignas(16) uint16_t sX[BM * LD];
+-    __shared__ alignas(16) uint16_t sW[BN * LD];
++    alignas(16) __shared__ uint16_t sX[BM * LD];
++    alignas(16) __shared__ uint16_t sW[BN * LD];
+ 
+     const int tid = threadIdx.x;
+     const int wave = tid >> 5;
+@@ -2242,8 +2242,8 @@ __global__ void __launch_bounds__(256) k_bf16_wmma_bf16_128x128_swiz(
+     int M, int N, int K) {
+ #if INK_HAS_WMMA
+     constexpr int BM = 128, BN = 128, BK = 32, LD = BK + 8;  // 40 uint16 = 80 B/row
+-    __shared__ alignas(16) uint16_t sX[2][BM * LD];          // 20,480 B
+-    __shared__ alignas(16) uint16_t sW[2][BN * LD];          // 20,480 B -> 40,960 B (double buffered!)
++    alignas(16) __shared__ uint16_t sX[2][BM * LD];          // 20,480 B
++    alignas(16) __shared__ uint16_t sW[2][BN * LD];          // 20,480 B -> 40,960 B (double buffered!)
+ 
+     const int num_n = (N + BN - 1) / BN;
+     const int num_m = (M + BM - 1) / BM;
+@@ -2371,8 +2371,8 @@ __global__ void __launch_bounds__(256) k_bf16_wmma_bf16_64x128(
+     int M, int N, int K) {
+ #if INK_HAS_WMMA
+     constexpr int BM = 64, BN = 128, BK = 64, LD = BK + 8;
+-    __shared__ alignas(16) uint16_t sX[BM * LD];
+-    __shared__ alignas(16) uint16_t sW[BN * LD];
++    alignas(16) __shared__ uint16_t sX[BM * LD];
++    alignas(16) __shared__ uint16_t sW[BN * LD];
+ 
+     const int tid = threadIdx.x;
+     const int wave = tid >> 5;
+@@ -2484,8 +2484,8 @@ __global__ void __launch_bounds__(128) k_bf16_wmma_f16(
+     constexpr int MTW = (BM / W_M) / 16;
+     constexpr int NTW = (BN / W_N) / 16;
+ 
+-    __shared__ alignas(16) half_t sX[BM * LD];
+-    __shared__ alignas(16) half_t sW[BN * LD];
++    alignas(16) __shared__ half_t sX[BM * LD];
++    alignas(16) __shared__ half_t sW[BN * LD];
+ 
+     const int tid = threadIdx.x;
+     const int wave = tid >> 5;
+@@ -2588,8 +2588,8 @@ __global__ void __launch_bounds__(128) k_bf16_fdot2_tiled(
+     float* __restrict__ Y,
+     int M, int N, int K) {
+     constexpr int BK = 32;
+-    __shared__ alignas(16) half_t sX[BM * BK];
+-    __shared__ alignas(16) half_t sW[BN * BK];
++    alignas(16) __shared__ half_t sX[BM * BK];
++    alignas(16) __shared__ half_t sW[BN * BK];
+     const int tid = threadIdx.x;
+     const int m_blk = blockIdx.y * BM;
+     const int n_blk = blockIdx.x * BN;
+@@ -2740,8 +2740,8 @@ __global__ void __launch_bounds__(128) k_f32_wmma_f16(
+     constexpr int MTW = (BM / W_M) / 16;
+     constexpr int NTW = (BN / W_N) / 16;
+ 
+-    __shared__ alignas(16) half_t sX[BM * LD];
+-    __shared__ alignas(16) half_t sW[BN * LD];
++    alignas(16) __shared__ half_t sX[BM * LD];
++    alignas(16) __shared__ half_t sW[BN * LD];
+ 
+     const int tid = threadIdx.x;
+     const int wave = tid >> 5;
+@@ -2921,7 +2921,7 @@ __global__ void __launch_bounds__(256) k_moe_direct_w13_situ(
+     const half_t* xrow = X_f16 + static_cast<size_t>(b) * D;
+     float acc = 0.0f;
+ 
+-    __shared__ alignas(16) half_t sX[2304];  // 4,608 B
++    alignas(16) __shared__ half_t sX[2304];  // 4,608 B
+     __shared__ half_t s_e4m3[256];           //   512 B
+     __shared__ uint32_t s_sf4_pair[256];     // 1,024 B
+     __shared__ float s_sf4_sc[256];          // 1,024 B
+@@ -3100,7 +3100,7 @@ __global__ void __launch_bounds__(256) k_moe_direct_w2_par(
+     }
+ 
+     const half_t* arow = act_in + static_cast<size_t>(slot_k) * inter;
+-    __shared__ alignas(16) half_t sA[1024];  // 2,048 B
++    alignas(16) __shared__ half_t sA[1024];  // 2,048 B
+     __shared__ half_t s_e4m3[256];           //   512 B
+     __shared__ uint32_t s_sf4_pair[256];     // 1,024 B
+     __shared__ float s_sf4_sc[256];          // 1,024 B
+@@ -3577,7 +3577,7 @@ __global__ void __launch_bounds__(256) k_moe_grouped_w13_situ(
+     const int row = (j << 1) | (wave & 1);
+     const int m_e = end - beg;
+ 
+-    __shared__ alignas(16) half_t sX[2304];  // 4,608 B (used when m_e == 1!)
++    alignas(16) __shared__ half_t sX[2304];  // 4,608 B (used when m_e == 1!)
+     __shared__ half_t s_e4m3[256];           //   512 B
+     __shared__ uint32_t s_sf4_pair[256];     // 1,024 B
+     __shared__ float s_sf4_sc[256];          // 1,024 B
+@@ -3921,7 +3921,7 @@ __global__ void __launch_bounds__(256) k_moe_grouped_w2(
+     const int row = blockIdx.x * 8 + wave;
+     const int m_e = end - beg;
+ 
+-    __shared__ alignas(16) half_t sA[1024];  // 2,048 B (used when m_e == 1!)
++    alignas(16) __shared__ half_t sA[1024];  // 2,048 B (used when m_e == 1!)
+     __shared__ half_t s_e4m3[256];           //   512 B
+     __shared__ uint32_t s_sf4_pair[256];     // 1,024 B
+     __shared__ float s_sf4_sc[256];          // 1,024 B
+@@ -4325,8 +4325,8 @@ __global__ void __launch_bounds__(256) k_moe_grouped_w13_situ_wmma(
+     const GpuExpertDesc desc = exps[eid];
+     if (!desc.body) return;
+ 
+-    __shared__ alignas(16) half_t sX[BM * LD];   // 9,216 B
+-    __shared__ alignas(16) half_t sW[BN * LD];   // 18,432 B
++    alignas(16) __shared__ half_t sX[BM * LD];   // 9,216 B
++    alignas(16) __shared__ half_t sW[BN * LD];   // 18,432 B
+     __shared__ half_t s_e4m3[256];               // 512 B -> 28,160 B (27.5 KB < 32 KB -> 2 WG/CU!)
+ 
+     const int tid = threadIdx.x;
+@@ -4538,8 +4538,8 @@ __global__ void __launch_bounds__(256) k_moe_grouped_w2_wmma(
+     const GpuExpertDesc desc = exps[eid];
+     if (!desc.body) return;
+ 
+-    __shared__ alignas(16) half_t sX[BM * LD];
+-    __shared__ alignas(16) half_t sW[BN * LD];
++    alignas(16) __shared__ half_t sX[BM * LD];
++    alignas(16) __shared__ half_t sW[BN * LD];
+     __shared__ half_t s_e4m3[256];
+ 
+     const int tid = threadIdx.x;
+@@ -4749,8 +4749,8 @@ __global__ void __launch_bounds__(256) k_moe_grouped_w13_situ_wmma_sk_i8(
+     const GpuExpertDesc desc = exps[eid];
+     if (!desc.body) return;
+ 
+-    __shared__ alignas(16) int8_t sXq[BM * LDI];   //  5,120 B
+-    __shared__ alignas(16) int8_t sWq[BN * LDI];   // 10,240 B
++    alignas(16) __shared__ int8_t sXq[BM * LDI];   //  5,120 B
++    alignas(16) __shared__ int8_t sWq[BN * LDI];   // 10,240 B
+     __shared__ float sXd[BM];                      //    256 B
+     __shared__ float sWs[BN];                      //    512 B -> 16,128 B (15.75 KB!)
+ 
+@@ -4934,8 +4934,8 @@ __global__ void __launch_bounds__(256) k_moe_grouped_w2_wmma_sk_i8(
+     const GpuExpertDesc desc = exps[eid];
+     if (!desc.body) return;
+ 
+-    __shared__ alignas(16) int8_t sXq[BM * LDI];
+-    __shared__ alignas(16) int8_t sWq[BN * LDI];
++    alignas(16) __shared__ int8_t sXq[BM * LDI];
++    alignas(16) __shared__ int8_t sWq[BN * LDI];
+     __shared__ float sXd[BM];
+     __shared__ float sWs[BN];
+ 
+@@ -5114,8 +5114,8 @@ __global__ void __launch_bounds__(256) k_moe_grouped_w13_situ_wmma_sf4_i8(
+     const GpuExpertDesc desc = exps[eid];
+     if (!desc.body) return;
+ 
+-    __shared__ alignas(16) int8_t sXq[BM * LDI];    //  5,120 B
+-    __shared__ alignas(16) int8_t sWq[BN * LDI];    // 10,240 B
++    alignas(16) __shared__ int8_t sXq[BM * LDI];    //  5,120 B
++    alignas(16) __shared__ int8_t sWq[BN * LDI];    // 10,240 B
+     __shared__ float sXd[BM * 4];                   //  1,024 B
+     __shared__ float sWs[BN * 4];                   //  2,048 B -> 18,432 B (18 KB < 32 KB -> 2+ WG/CU!)
+ 
+@@ -5294,8 +5294,8 @@ __global__ void __launch_bounds__(256) k_moe_grouped_w2_wmma_sf4_i8(
+     const GpuExpertDesc desc = exps[eid];
+     if (!desc.body) return;
+ 
+-    __shared__ alignas(16) int8_t sXq[BM * LDI];
+-    __shared__ alignas(16) int8_t sWq[BN * LDI];
++    alignas(16) __shared__ int8_t sXq[BM * LDI];
++    alignas(16) __shared__ int8_t sWq[BN * LDI];
+     __shared__ float sXd[BM * 4];
+     __shared__ float sWs[BN * 4];
+ 
+@@ -5557,8 +5557,8 @@ __global__ void __launch_bounds__(256) k_moe_grouped_w13_situ_wmma_sk_i8_128(
+     const GpuExpertDesc desc = exps[eid];
+     if (!desc.body) return;
+ 
+-    __shared__ alignas(16) int8_t sXq[BM * LDI];   // 10,240 B
+-    __shared__ alignas(16) int8_t sWq[BN * LDI];   // 10,240 B
++    alignas(16) __shared__ int8_t sXq[BM * LDI];   // 10,240 B
++    alignas(16) __shared__ int8_t sWq[BN * LDI];   // 10,240 B
+     __shared__ float sXd[BM];                      //    512 B
+     __shared__ float sWs[BN];                      //    512 B
+     __shared__ int32_t sTok[BM];                   //    512 B -> 22.0 KB
+@@ -5748,8 +5748,8 @@ __global__ void __launch_bounds__(256) k_moe_grouped_w2_wmma_sk_i8_128(
+     const GpuExpertDesc desc = exps[eid];
+     if (!desc.body) return;
+ 
+-    __shared__ alignas(16) int8_t sXq[BM * LDI];
+-    __shared__ alignas(16) int8_t sWq[BN * LDI];
++    alignas(16) __shared__ int8_t sXq[BM * LDI];
++    alignas(16) __shared__ int8_t sWq[BN * LDI];
+     __shared__ float sXd[BM];
+     __shared__ float sWs[BN];
+ 
+@@ -5931,8 +5931,8 @@ __global__ void __launch_bounds__(256) k_moe_grouped_w13_situ_wmma_sf4_i8_128(
+     const GpuExpertDesc desc = exps[eid];
+     if (!desc.body) return;
+ 
+-    __shared__ alignas(16) int8_t sXq[BM * LDI];   // 10,240 B
+-    __shared__ alignas(16) int8_t sWq[BN * LDI];   // 10,240 B
++    alignas(16) __shared__ int8_t sXq[BM * LDI];   // 10,240 B
++    alignas(16) __shared__ int8_t sWq[BN * LDI];   // 10,240 B
+     __shared__ float sXd[BM * 4];                  //  2,048 B
+     __shared__ float sWs[BN * 4];                  //  2,048 B -> 24,576 B
+     __shared__ int32_t sTok[BM];                   //    512 B -> 25.0 KB (< 32 KB -> 2 WG/CU!)
+@@ -6118,8 +6118,8 @@ __global__ void __launch_bounds__(256) k_moe_grouped_w2_wmma_sf4_i8_128(
+     const GpuExpertDesc desc = exps[eid];
+     if (!desc.body) return;
+ 
+-    __shared__ alignas(16) int8_t sXq[BM * LDI];
+-    __shared__ alignas(16) int8_t sWq[BN * LDI];
++    alignas(16) __shared__ int8_t sXq[BM * LDI];
++    alignas(16) __shared__ int8_t sWq[BN * LDI];
+     __shared__ float sXd[BM * 4];
+     __shared__ float sWs[BN * 4];
+ 
+@@ -6295,8 +6295,8 @@ __global__ void __launch_bounds__(256) k_moe_grouped_w13_situ_wmma_128(
+     const GpuExpertDesc desc = exps[eid];
+     if (!desc.body) return;
+ 
+-    __shared__ alignas(16) half_t sX[BM * LD];   // 10,240 B
+-    __shared__ alignas(16) half_t sW[BN * LD];   // 10,240 B
++    alignas(16) __shared__ half_t sX[BM * LD];   // 10,240 B
++    alignas(16) __shared__ half_t sW[BN * LD];   // 10,240 B
+     __shared__ half_t s_e4m3[256];               //    512 B
+     __shared__ int32_t sTok[BM];                 //    512 B -> 21.5 KB
+ 
+@@ -6505,8 +6505,8 @@ __global__ void __launch_bounds__(256) k_moe_grouped_w2_wmma_128(
+     const GpuExpertDesc desc = exps[eid];
+     if (!desc.body) return;
+ 
+-    __shared__ alignas(16) half_t sX[BM * LD];
+-    __shared__ alignas(16) half_t sW[BN * LD];
++    alignas(16) __shared__ half_t sX[BM * LD];
++    alignas(16) __shared__ half_t sW[BN * LD];
+     __shared__ half_t s_e4m3[256];
+ 
+     const int tid = threadIdx.x;
+@@ -6708,8 +6708,8 @@ __global__ void __launch_bounds__(256) k_moe_grouped_w13_situ_wmma_128_spec(
+     const GpuExpertDesc desc = exps[eid];
+     if (!desc.body) return;
+ 
+-    __shared__ alignas(16) half_t sX[2][BM * LD];  // 20,480 B
+-    __shared__ alignas(16) half_t sW[2][BN * LD];  // 20,480 B -> 40,960 B (double buffered!)
++    alignas(16) __shared__ half_t sX[2][BM * LD];  // 20,480 B
++    alignas(16) __shared__ half_t sW[2][BN * LD];  // 20,480 B -> 40,960 B (double buffered!)
+     __shared__ half_t s_e4m3[CODEC_KIND == 2 ? 256 : 1];
+     __shared__ uint32_t s_sf4_pair[CODEC_KIND == 1 ? 256 : 1];
+     __shared__ uint32_t s_sf4_sc2[CODEC_KIND == 1 ? 256 : 1];
+@@ -6895,8 +6895,8 @@ __global__ void __launch_bounds__(256) k_moe_grouped_w2_wmma_128_spec(
+     const GpuExpertDesc desc = exps[eid];
+     if (!desc.body) return;
+ 
+-    __shared__ alignas(16) half_t sX[2][BM * LD];
+-    __shared__ alignas(16) half_t sW[2][BN * LD];
++    alignas(16) __shared__ half_t sX[2][BM * LD];
++    alignas(16) __shared__ half_t sW[2][BN * LD];
+     __shared__ half_t s_e4m3[CODEC_KIND == 2 ? 256 : 1];
+     __shared__ uint32_t s_sf4_pair[CODEC_KIND == 1 ? 256 : 1];
+     __shared__ uint32_t s_sf4_sc2[CODEC_KIND == 1 ? 256 : 1];
+diff --git a/engine/src/inkling2/hip/ink_hip_ops.hip.h b/engine/src/inkling2/hip/ink_hip_ops.hip.h
+index d8131c14..a9ed1fbf 100644
+--- a/engine/src/inkling2/hip/ink_hip_ops.hip.h
++++ b/engine/src/inkling2/hip/ink_hip_ops.hip.h
+@@ -810,8 +810,8 @@ __global__ void __launch_bounds__(128) k1_loop_ctrl_down_wmma_fused(
+     int M, int D) {
+ #if INK_HAS_WMMA
+     constexpr int BM = 64, BN = 64, BK = 64, LD = BK + 8;
+-    __shared__ alignas(16) uint16_t sX[BM * LD];   // 9,216 B
+-    __shared__ alignas(16) uint16_t sW[BN * LD];   // 9,216 B -> 18,432 B (18.0 KB!)
++    alignas(16) __shared__ uint16_t sX[BM * LD];   // 9,216 B
++    alignas(16) __shared__ uint16_t sW[BN * LD];   // 9,216 B -> 18,432 B (18.0 KB!)
+     __shared__ float sInvC[BM];
+     __shared__ float sInvM[BM];
+ 
+@@ -917,9 +917,9 @@ __global__ void __launch_bounds__(128) k1_loop_ctrl_up_wmma_fused(
+     int M, int D) {
+ #if INK_HAS_WMMA
+     constexpr int BM = 64, BN = 64, BK = 64, LD = BK + 8;
+-    __shared__ alignas(16) uint16_t sG[BM * LD];   // 9,216 B
+-    __shared__ alignas(16) uint16_t sWg[BN * LD];  // 9,216 B
+-    __shared__ alignas(16) uint16_t sWf[BN * LD];  // 9,216 B -> 27,648 B (27.0 KB!)
++    alignas(16) __shared__ uint16_t sG[BM * LD];   // 9,216 B
++    alignas(16) __shared__ uint16_t sWg[BN * LD];  // 9,216 B
++    alignas(16) __shared__ uint16_t sWf[BN * LD];  // 9,216 B -> 27,648 B (27.0 KB!)
+ 
+     const int tid = threadIdx.x;
+     const int wave = tid >> 5;
+@@ -1899,7 +1899,7 @@ __global__ void __launch_bounds__(128) k3_flash_swa_gqa_splitkv(
+     // 1 single __syncthreads() to merge the 4 waves' online-softmax accumulators!
+     __shared__ float s_max[4];
+     __shared__ float s_sum[4];
+-    __shared__ alignas(16) float4 s_o[4][32];
++    alignas(16) __shared__ float4 s_o[4][32];
+     if (lane == 0) { s_max[wave] = max_l; s_sum[wave] = sum_exp; }
+     s_o[wave][lane] = make_float4(o0, o1, o2, o3);
+     __syncthreads();
+@@ -2021,7 +2021,7 @@ __global__ void __launch_bounds__(256) k3_flash_splitkv_part(
+ 
+     __shared__ float s_max[8];
+     __shared__ float s_sum[8];
+-    __shared__ alignas(16) float4 s_o[8][32];
++    alignas(16) __shared__ float4 s_o[8][32];
+     if (lane == 0) { s_max[wave] = max_l; s_sum[wave] = sum_exp; }
+     s_o[wave][lane] = make_float4(o0, o1, o2, o3);
+     __syncthreads();
+@@ -2125,7 +2125,7 @@ __global__ void __launch_bounds__(128) k3_flash_swa_gqa_prefill_wmma(
+         alignas(16) half_t sVt[HD * LDV];  // [128, 72] for transposed V tiles
+     };
+     __shared__ KvBuf kv;
+-    __shared__ alignas(16) half_t sP[BQ * LDP];
++    alignas(16) __shared__ half_t sP[BQ * LDP];
+ 
+     const int tid = threadIdx.x;
+     const int wave = tid >> 5;
+@@ -3270,7 +3270,7 @@ __global__ void __launch_bounds__(256) k_unembed_softcap(
+         }
+     } else {
+         // S_K (especially S6_K on SQ-10/SQ-15/SQ-20!): cache each 256-elem superblock of h_norm as FP16 in LDS ONCE for all 8 waves!
+-        __shared__ alignas(16) half_t sH[16 * 256];  // 8,192 B
++        alignas(16) __shared__ half_t sH[16 * 256];  // 8,192 B
+         const int sb_b = sk_sb_bytes(fmt);
+         const int nsb = D >> 8;
+         const uint8_t* wr = (v < V) ? (unemb_raw + static_cast<size_t>(v) * nsb * sb_b) : nullptr;
+@@ -3347,8 +3347,8 @@ __global__ void __launch_bounds__(256) k5_dspark_packed_argmax_stage1(
+     const int wave = tid >> 5;
+     const int lane = tid & 31;
+ 
+-    __shared__ alignas(16) float s_comb[2304];
+-    __shared__ alignas(16) half_t s_comb_h[2304];
++    alignas(16) __shared__ float s_comb[2304];
++    alignas(16) __shared__ half_t s_comb_h[2304];
+     for (int d = tid; d < D; d += 256) {
+         const float c = cur_step[d] + corr[d];
+         s_comb[d] = c;
+@@ -3456,7 +3456,7 @@ __global__ void __launch_bounds__(256) k5_dspark_base_top2_screen(
+             int32_t i[7 * 16];
+         } red;
+     };
+-    __shared__ alignas(16) ScreenLds u;
++    alignas(16) __shared__ ScreenLds u;
+     if (fmt < 100) {
+         const int tot = n_draft * D;
+         for (int idx = tid; idx < tot; idx += 256) {
+@@ -3641,8 +3641,8 @@ __global__ void __launch_bounds__(256) k5_dspark_cand_argmax_stage1(
+     const int wave = tid >> 5;
+     const int lane = tid & 31;
+ 
+-    __shared__ alignas(16) float s_corr[2304];
+-    __shared__ alignas(16) half_t s_corr_h[2304];
++    alignas(16) __shared__ float s_corr[2304];
++    alignas(16) __shared__ half_t s_corr_h[2304];
+     for (int d = tid; d < D; d += 256) {
+         const float c = corr[d];
+         s_corr[d] = c;
+diff --git a/engine/src/inkling2/hip/ink_hip_tree.hip.h b/engine/src/inkling2/hip/ink_hip_tree.hip.h
+index 10cf85c7..39d61c54 100644
+--- a/engine/src/inkling2/hip/ink_hip_tree.hip.h
++++ b/engine/src/inkling2/hip/ink_hip_tree.hip.h
+@@ -159,7 +159,7 @@ __global__ void __launch_bounds__(256) k5_beam_cand_scores(
+         half_t   h[kBeamW * 2304];   // 18,432 B
+         uint16_t bf[kBeamW * 2304];  // 18,432 B
+     };
+-    __shared__ alignas(16) CorrLds sc;
++    alignas(16) __shared__ CorrLds sc;
+     const int tot = W_active * D;
+     if (fmt < 100) {
+         for (int i = tid; i < tot; i += 256) sc.h[i] = static_cast<half_t>(corr[i]);
+@@ -726,7 +726,7 @@ __global__ void __launch_bounds__(128) k3_flash_swa_gqa_tree(
+ 
+     __shared__ float s_max[4];
+     __shared__ float s_sum[4];
+-    __shared__ alignas(16) float4 s_o[4][32];
++    alignas(16) __shared__ float4 s_o[4][32];
+     if (lane == 0) { s_max[wave] = max_l; s_sum[wave] = sum_exp; }
+     s_o[wave][lane] = make_float4(o0, o1, o2, o3);
+     __syncthreads();
+@@ -856,7 +856,7 @@ __global__ void __launch_bounds__(256) k3_flash_tree_splitkv_part(
+ 
+     __shared__ float s_max[8];
+     __shared__ float s_sum[8];
+-    __shared__ alignas(16) float4 s_o[8][32];
++    alignas(16) __shared__ float4 s_o[8][32];
+     if (lane == 0) { s_max[wave] = max_l; s_sum[wave] = sum_exp; }
+     s_o[wave][lane] = make_float4(o0, o1, o2, o3);
+     __syncthreads();
+@@ -916,7 +916,7 @@ __global__ void __launch_bounds__(256) k_unembed_argmax_batch_stage1(
+             int32_t wi[MT * 8];
+         } red;
+     };
+-    __shared__ alignas(16) ArgLds u;
++    alignas(16) __shared__ ArgLds u;
+ 
+     const bool use_lds = (MT <= 7 && D <= 2304);
+     if constexpr (MT <= 7) {
