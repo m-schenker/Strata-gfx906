@@ -59,8 +59,9 @@ the native distro runtime is 7.2 with data, so a host-native run works; in the 7
 
 ## What still needs testing / work
 
-1. **deepseek runtime:** finish the 183 GB download, then `strata-dsv41 --serve` (or a few-token gen) with the ISTA IQ2_XXS +
-   Engram. Confirm the GSQ-RCO-Coder expert layout loads (arch `deepseek41` confirmed in the GGUF metadata).
+1. **deepseek runtime:** finish the 183 GB download, then **pack** the GGUF with the vendored `tools/dsv41/pack_gguf.py`
+   (dsv41 reads the `maya-ds4` pack via `--pack`, not raw GGUF), then run a few-token gen / `--serve`. Confirm the
+   GSQ-RCO-Coder expert layout loads (arch `deepseek41` confirmed in the GGUF metadata).
 2. **hy4 runtime (optional):** download SQ-64 + Engram (130 GB, fits the drive) and run a few-token gen; or pack a Maya GGUF to
    `.strata`. Not done per owner (no smaller quant).
 3. **inkling GPU backend:** the FP4 expert kernels are NVIDIA Blackwell-specific; a gfx906 (wave64) GPU port is a separate,
