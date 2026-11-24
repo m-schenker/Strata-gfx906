@@ -1,0 +1,32 @@
+# backend: both
+# gfx906 compat: CUDA->HIP names the v0.2.21 engine uses that the compat layer lacked (peer_experts P2P/PCI,
+#   error codes, occupancy/func/pointer attributes, graph node-priority flag). A STRATA_HIP_GFX906 build compiles
+#   the CUDA branches, so each needs a map. Same class as the 0.1.61 port's 0001; refreshed for engine/ layout.
+diff --git a/engine/include/strata/platform/hip_compat/strata_hip.h b/engine/include/strata/platform/hip_compat/strata_hip.h
+index ee9b2259..27818c49 100644
+--- a/engine/include/strata/platform/hip_compat/strata_hip.h
++++ b/engine/include/strata/platform/hip_compat/strata_hip.h
+@@ -28,6 +28,23 @@
+ #define cudaSuccess hipSuccess
+ #define cudaErrorNotReady hipErrorNotReady
+ #define cudaErrorMemoryAllocation hipErrorOutOfMemory
++// gfx906 compat (m-schenker): CUDA names the newer engine uses that the compat layer lacked. A STRATA_HIP_GFX906
++// build compiles the CUDA branches (it defines neither STRATA_USE_HIP nor STRATA_GPU_METAL), so each needs a HIP map.
++#define cudaErrorInvalidDevice hipErrorInvalidDevice
++#define cudaErrorInvalidValue hipErrorInvalidValue
++#define cudaErrorNotSupported hipErrorNotSupported
++#define cudaErrorUnknown hipErrorUnknown
++#define cudaDevAttrIntegrated hipDeviceAttributeIntegrated
++#define cudaDeviceGetPCIBusId hipDeviceGetPCIBusId
++#define cudaDeviceGetP2PAttribute hipDeviceGetP2PAttribute
++#define cudaDevP2PAttrNativeAtomicSupported hipDevP2PAttrNativeAtomicSupported
++#define cudaOccupancyMaxActiveBlocksPerMultiprocessor hipOccupancyMaxActiveBlocksPerMultiprocessor
++#define cudaFuncAttributes hipFuncAttributes
++#define cudaFuncGetAttributes hipFuncGetAttributes
++#define cudaPointerAttributes hipPointerAttribute_t
++#define cudaPointerGetAttributes hipPointerGetAttributes
++#define cudaMemoryTypeDevice hipMemoryTypeDevice
++#define cudaGraphInstantiateFlagUseNodePriority hipGraphInstantiateFlagUseNodePriority
+ #define cudaErrorStreamCaptureUnsupported hipErrorStreamCaptureUnsupported
+ #define cudaErrorPeerAccessAlreadyEnabled hipErrorPeerAccessAlreadyEnabled
+ #define cudaStream_t hipStream_t
