@@ -1,82 +1,7 @@
-# Strata for AMD gfx906 — a fork for MI50 / MI60 class cards
-
-**This is a fork of [Strata](https://github.com/Niko1221/Strata) for the gfx906 series of AMD GPUs** — Instinct MI50,
-Instinct MI60, Radeon Pro VII and Radeon VII (wave64, no matrix cores). Everything upstream ships is here; what this fork
-adds is a container build that makes the engines actually run on these cards, and the source changes that requires.
-
-## Where the changes live
-
-**Every change is contained in the [`m-schenker/`](m-schenker/) folder.** The only file this fork touches outside that
-folder is this `README.md`, which carries this notice. Nothing else in the source tree is edited: the container applies
-its modifications as patch files and added source files at build time, from inside `m-schenker/gfx906/`, and the rest of
-the tree is the upstream commit it was forked from. That keeps a rebase onto a newer Strata a matter of moving one
-folder.
-
-## What was changed
-
-- **The Qwen backend was upgraded to Strata 0.2.15** (engine `0.1.61`, `qwen4exp`) and is built for gfx906 from the
-  upstream sources as they are, with the handful of missing CUDA→HIP mappings carried as a patch.
-- **The DeepSeek backend was ported to gfx906 as well, and is carried at version 0.2.13** — the last upstream release
-  that still contained it. Upstream removed the DeepSeek engine from the tree in v0.2.14, so this fork vendors v0.2.13's
-  `src/dsv41` engine (0.1.59), its `tools/dsv41` packer and its server package into `m-schenker/gfx906/`, wires it back
-  into the 0.2.15 CMake build, and compiles it for gfx906 behind a compat layer: no matrix cores, no `mma.sync`, no
-  `__ldcv`, and F32 forms of the low-bit expert kernels.
-- Both engines live in one image and one container. The model's own GGUF metadata decides which engine serves it — a
-  DeepSeek set goes to `strata-dsv41`, anything else to `strata` — so there is nothing to choose at run time.
-
-The build and run guide is **[`m-schenker/gfx906/README.md`](m-schenker/gfx906/README.md)**; the full manual, including
-how ROCm is obtained, every build argument and setting, what the build is verified to do and how to read a failure, is
-**[`m-schenker/gfx906/REFERENCE.md`](m-schenker/gfx906/REFERENCE.md)**.
-
-## AI disclaimer
-
-**All changes in this fork were made with the help of DeepSeek-V4.1-Flash, run on an RTX Pro 6000 with Strata.** The
-port, the patches, the container build and the documentation in the `m-schenker` folder were produced in that assisted
-workflow, then built and exercised on real gfx906 hardware. Treat it as you would any contributed code: read the
-patches, run the verification script, and take your own numbers — `m-schenker/gfx906/REFERENCE.md`, "Measuring on your
-hardware", says how.
-
-## Build and run, in short
-
-All commands run from the repository root, the folder that contains `m-schenker/`.
-
-```sh
-# 1. build the image (both engines for gfx906; the long step, tens of minutes)
-m-schenker/gfx906/build-image.sh                     # -> strata-gfx906:0.2.15
-
-# 2. configure once: the .env goes BESIDE the compose file - that is where compose reads it
-cp m-schenker/gfx906/.env.example m-schenker/gfx906/.env   # then set STRATA_MODEL_DIR / STRATA_DATA_DIR / MODEL_GGUF
-                                                            # and, on rootless Docker, MEMLOCK (see below)
-
-# 3. pack the model for the engine that will serve it (once per model)
-docker compose -f m-schenker/gfx906/docker-compose.yml run --rm strata pack
-
-# 4. serve it
-docker compose -f m-schenker/gfx906/docker-compose.yml up -d
-docker compose -f m-schenker/gfx906/docker-compose.yml logs -f       # "healthy" when the API answers
-
-# 5. ask it something
-KEY=$(docker compose -f m-schenker/gfx906/docker-compose.yml exec -T strata cat /data/state/api-key)
-curl -s http://127.0.0.1:8080/v1/chat/completions \
-  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
-  -d '{"model":"<model-id>","messages":[{"role":"user","content":"Hello"}],"max_tokens":64}'
-```
-
-Before you start: a gfx906 card with a working `amdgpu` driver, Docker (rootless works), and the model as GGUF — the
-container expects the host folder in `STRATA_MODEL_DIR` and mounts it read-only at `/models`. On rootless Docker also set
-`MEMLOCK` in that `.env` to the user's hard limit in bytes (`ulimit -Hl` × 1024, usually `8388608`): the daemon cannot
-raise it, and without it the container refuses to start with `error setting rlimits for ready process: error setting
-rlimit type 8: operation not permitted`. Requirements, the full walkthrough and the sample configurations are in
-[`m-schenker/gfx906/README.md`](m-schenker/gfx906/README.md).
-
----
-
-*Everything below is the upstream Strata README, unchanged.*
-
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="apps/host/public/brand/strata-lockup-dark.svg">
-    <img src="apps/host/public/brand/strata-lockup-light.svg" alt="Strata" width="340">
+    <source media="(prefers-color-scheme: dark)" srcset="app/host/public/brand/strata-lockup-dark.svg">
+    <img src="app/host/public/brand/strata-lockup-light.svg" alt="Strata" width="340">
   </picture>
 </p>
 
@@ -96,7 +21,7 @@ rlimit type 8: operation not permitted`. Requirements, the full walkthrough and 
   <a href="https://buymeacoffee.com/strataengine"><img src="https://img.shields.io/badge/Buy_me_a_coffee-FFDD00?logo=buymeacoffee&logoColor=000" alt="Support Strata on Buy Me a Coffee"></a>
 </p>
 
-<p align="center"><sub><b>English</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.de.md">Deutsch</a> · <a href="README.fr.md">Français</a> · <a href="README.es.md">Español</a> · <a href="README.pt-BR.md">Português</a> · <a href="README.pl.md">Polski</a></sub></p>
+<p align="center"><sub><b>English</b> · <a href="docs/lang/README.zh-CN.md">简体中文</a> · <a href="docs/lang/README.ja.md">日本語</a> · <a href="docs/lang/README.de.md">Deutsch</a> · <a href="docs/lang/README.fr.md">Français</a> · <a href="docs/lang/README.es.md">Español</a> · <a href="docs/lang/README.pt-BR.md">Português</a> · <a href="docs/lang/README.pl.md">Polski</a></sub></p>
 
 **Free, open source, and yours to run.** Use Strata on your desktop or with your favorite coding tools. No account needed.
 
@@ -119,11 +44,40 @@ We recommend **ISTA-DASLab first**, then **Unsloth** and other providers, where 
 </details>
 
 <details>
+<summary><img src="docs/media/models/hunyuan.svg" width="22" alt="" align="middle"> &nbsp;<b>Tencent Hy4-Flash</b></summary>
+
+| Pack | Your RAM | Graphics card |
+| --- | --- | --- |
+| **SQ-64** | 64 GiB | 8, 12 or 16 GiB |
+| **SQ-96** | 96 GiB | 8 or 12 GiB |
+| **SQ-128** | 128 GiB | 8 or 12 GiB |
+
+The number in the name is the RAM the pack is made for.
+
+[Hy4-Flash packs on Hugging Face](https://huggingface.co/strata-engine/Hy4-Flash-Strata)
+
+</details>
+
+<details>
 <summary><img src="docs/media/models/qwen.svg" width="22" alt="" align="middle"> &nbsp;<b>Qwen3.6-35B-A3B</b></summary>
 
 **Unsloth:** UD-Q4_K_XL, UD-Q6_K_XL, Q8_0. These are the currently documented packs for this model.
 
 [Model guide and compatibility](docs/QWEN36.md).
+
+</details>
+
+<details>
+<summary><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/models/thinking-machines-white.png"><img src="docs/media/models/thinking-machines.png" height="22" alt="Thinking Machines" align="middle"></picture> &nbsp;<b>Inkling 2 Mini</b></summary>
+
+| Provider | Choices |
+| --- | --- |
+| **Strata** | SQ-20 (19.35 GB), SQ-15 (14.35 GB), SQ-10 (10.47 GB) |
+| **Unsloth** | UD-Q8\_K\_XL (22.87 GB), UD-Q4\_K\_XL (17.63 GB), UD-Q4\_K\_M (16.61 GB), UD-IQ4\_XS (15.73 GB), UD-Q3\_K\_XL (13.63 GB), UD-IQ3\_XXS (11.66 GB), UD-Q2\_K\_XL (9.14 GB), UD-IQ2\_XXS (8.49 GB), UD-IQ1\_M (8.02 GB), UD-IQ1\_S (7.76 GB) |
+
+SQ-20 is made for a 24 GiB graphics card, SQ-15 for 16 GiB and SQ-10 for 12 GiB. A 4 GiB card is enough to start.
+
+[Strata packs on Hugging Face](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata) · [Unsloth GGUF files](https://huggingface.co/unsloth/Inkling-2-Mini-GGUF)
 
 </details>
 
@@ -142,7 +96,7 @@ Not sure what fits? [Choose a model for your computer](docs/MODELS.md#pick-by-me
 Install the app, choose a model, and start chatting. There is one installer for each system. On first start the app
 downloads the engine for your graphics card. [Help with the installer](docs/INSTALL.md#the-app).
 
-<sub>Files: `Strata-0.2.15-windows-x64-setup.exe` · `Strata-0.2.15-linux-x86_64.AppImage` · `Strata-0.2.15-macos-arm64.dmg`</sub>
+<sub>Files: `Strata-0.2.21-windows-x64-setup.exe` · `Strata-0.2.21-linux-x86_64.AppImage` · `Strata-0.2.21-macos-arm64.dmg`</sub>
 
 <p align="center">
   <img src="docs/media/app-chat.png" width="900" alt="Strata desktop app with a chat and live code preview side by side">
@@ -219,7 +173,16 @@ Run **`strata connect`** to see setup instructions for your tool. [Connection gu
 ## Help
 
 [All guides](docs) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Report a bug](https://github.com/Niko1221/Strata/issues/new/choose) ·
-[Benchmarks](docs/COMMUNITY_BENCHMARKS.md) · [How it works](docs/HOW_IT_WORKS.md) · [Contribute](CONTRIBUTING.md)
+[Benchmarks](docs/COMMUNITY_BENCHMARKS.md) · [How it works](docs/HOW_IT_WORKS.md) · [Contribute](.github/CONTRIBUTING.md)
+
+## Sponsors of Strata
+
+<!-- Sponsor logos: one centred row with room for five, each 130 px wide. Add the next sponsor after Olares, with &nbsp;&nbsp;&nbsp;&nbsp; between two logos. -->
+<p align="center">
+  <a href="https://heylinger.com"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/sponsors/linger-logo-white.svg"><img src="docs/media/sponsors/linger-logo-color.svg" alt="Linger" title="Linger" width="130" align="middle"></picture></a>
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <a href="https://www.olares.com/one"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/media/sponsors/olares-logo-white.svg"><img src="docs/media/sponsors/olares-logo-color.svg" alt="Olares" title="Olares" width="130" align="middle"></picture></a>
+</p>
 
 ## Support Strata
 
@@ -232,17 +195,27 @@ Run **`strata connect`** to see setup instructions for your tool. [Connection gu
 
 Thank you to everyone who supports Strata.
 
-<!-- supporters:start (one line per public supporter, newest last; copy a line and change the GitHub name in all four places) -->
-<a href="https://github.com/ryan4yin"><img src="https://github.com/ryan4yin.png?size=96" width="48" height="48" alt="ryan4yin" title="ryan4yin"></a>
-<a href="https://github.com/themactep"><img src="https://github.com/themactep.png?size=96" width="48" height="48" alt="themactep" title="themactep"></a>
-<a href="https://github.com/macintog"><img src="https://github.com/macintog.png?size=96" width="48" height="48" alt="macintog" title="macintog"></a>
-<a href="https://github.com/bisonbet"><img src="https://github.com/bisonbet.png?size=96" width="48" height="48" alt="bisonbet" title="bisonbet"></a>
-<a href="https://github.com/vizv"><img src="https://github.com/vizv.png?size=96" width="48" height="48" alt="vizv" title="vizv"></a>
-<a href="https://github.com/kod88vn"><img src="https://github.com/kod88vn.png?size=96" width="48" height="48" alt="kod88vn" title="kod88vn"></a>
-<a href="https://github.com/seoulworker"><img src="https://github.com/seoulworker.png?size=96" width="48" height="48" alt="seoulworker" title="seoulworker"></a>
-<a href="https://github.com/jackyini"><img src="https://github.com/jackyini.png?size=96" width="48" height="48" alt="jackyini" title="jackyini"></a>
-<a href="https://github.com/router0mail"><img src="https://github.com/router0mail.png?size=96" width="48" height="48" alt="router0mail" title="router0mail"></a>
+<!-- supporters:start (generated from the public GitHub sponsors: one row per level, the biggest supporters first and largest; private sponsors are not listed) -->
+<a href="https://github.com/codeconduit-official"><img src="https://images.weserv.nl/?url=github.com/codeconduit-official.png&w=240&h=240&fit=cover&mask=circle&output=png" width="120" height="120" alt="codeconduit-official" title="codeconduit-official"></a>
+
+<a href="https://github.com/kod88vn"><img src="https://images.weserv.nl/?url=github.com/kod88vn.png&w=160&h=160&fit=cover&mask=circle&output=png" width="80" height="80" alt="kod88vn" title="kod88vn"></a>
+<a href="https://github.com/router0mail"><img src="https://images.weserv.nl/?url=github.com/router0mail.png&w=160&h=160&fit=cover&mask=circle&output=png" width="80" height="80" alt="router0mail" title="router0mail"></a>
+<a href="https://github.com/kingdonb"><img src="https://images.weserv.nl/?url=github.com/kingdonb.png&w=160&h=160&fit=cover&mask=circle&output=png" width="80" height="80" alt="kingdonb" title="kingdonb"></a>
+<a href="https://github.com/Daisame"><img src="https://images.weserv.nl/?url=github.com/Daisame.png&w=160&h=160&fit=cover&mask=circle&output=png" width="80" height="80" alt="Daisame" title="Daisame"></a>
+
+<a href="https://github.com/ryan4yin"><img src="https://images.weserv.nl/?url=github.com/ryan4yin.png&w=112&h=112&fit=cover&mask=circle&output=png" width="56" height="56" alt="ryan4yin" title="ryan4yin"></a>
+<a href="https://github.com/themactep"><img src="https://images.weserv.nl/?url=github.com/themactep.png&w=112&h=112&fit=cover&mask=circle&output=png" width="56" height="56" alt="themactep" title="themactep"></a>
+<a href="https://github.com/macintog"><img src="https://images.weserv.nl/?url=github.com/macintog.png&w=112&h=112&fit=cover&mask=circle&output=png" width="56" height="56" alt="macintog" title="macintog"></a>
+<a href="https://github.com/bisonbet"><img src="https://images.weserv.nl/?url=github.com/bisonbet.png&w=112&h=112&fit=cover&mask=circle&output=png" width="56" height="56" alt="bisonbet" title="bisonbet"></a>
+<a href="https://github.com/vizv"><img src="https://images.weserv.nl/?url=github.com/vizv.png&w=112&h=112&fit=cover&mask=circle&output=png" width="56" height="56" alt="vizv" title="vizv"></a>
+<a href="https://github.com/seoulworker"><img src="https://images.weserv.nl/?url=github.com/seoulworker.png&w=112&h=112&fit=cover&mask=circle&output=png" width="56" height="56" alt="seoulworker" title="seoulworker"></a>
+<a href="https://github.com/jaceknoga"><img src="https://images.weserv.nl/?url=github.com/jaceknoga.png&w=112&h=112&fit=cover&mask=circle&output=png" width="56" height="56" alt="jaceknoga" title="jaceknoga"></a>
+<a href="https://github.com/jackyini"><img src="https://images.weserv.nl/?url=github.com/jackyini.png&w=112&h=112&fit=cover&mask=circle&output=png" width="56" height="56" alt="jackyini" title="jackyini"></a>
+<a href="https://github.com/moruku36"><img src="https://images.weserv.nl/?url=github.com/moruku36.png&w=112&h=112&fit=cover&mask=circle&output=png" width="56" height="56" alt="moruku36" title="moruku36"></a>
+<a href="https://github.com/hrkgk"><img src="https://images.weserv.nl/?url=github.com/hrkgk.png&w=112&h=112&fit=cover&mask=circle&output=png" width="56" height="56" alt="hrkgk" title="hrkgk"></a>
 <!-- supporters:end -->
+
+All supporters and how to support Strata: [SUPPORTERS.md](SUPPORTERS.md)
 
 [MIT license](LICENSE) · [Credits and model licenses](docs/HOW_IT_WORKS.md#credits) · [Privacy](docs/SAFETY.md)
 

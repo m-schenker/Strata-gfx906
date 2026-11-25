@@ -1,52 +1,42 @@
-# backend: both (the build wiring; the engine it builds is ds41 only)
-# 0002 - build the vendored DeepSeek-V4.1 engine (strata-dsv41) beside the Qwen one.
-#
-# Upstream removed src/dsv41, tools/dsv41 and their CMake targets in v0.2.14 ("DeepSeek out" 1/7..7/7), because the
-# engine ships as a signed package for Strata 0.2.13 and earlier.  This container still serves DeepSeek-V4.1-Flash on
-# the MI50s, so the engine is vendored: added-source-files/src/dsv41 and added-source-files/tools/dsv41 (v0.2.13's
-# tree, MIT, projected from Project Maya's maya-ds4), plus added-source-files/cmake/strata_dsv41.cmake.
-#
-# Two hunks, both in the build:
-#   * CMakeLists.txt calls the vendored module once the gfx906 backend has set up CUDA::cudart / CUDA::cublas, its
-#     include directories and strata_prefill (the engine links all three).  The call is skipped when the module is not
-#     there, so a tree without this container applies nothing and builds the Qwen engine only.
-#   * cmake/strata_ggml.cmake builds ggml-cpu with BMI2 OFF when STRATA_BUILD_DSV41 is on: ggml's IQ1_S / IQ1_M dots
-#     use _pdep_u64, which AMD Zen 1/2 run in microcode.  Upstream's dsv41 block did the same, and it went out with
-#     the engine.
-#
-# The engine's own gfx906 changes (no WMMA, no cuda_bf16.h, no __ldcv) are baked into the vendored copy:
-# added-source-files/src/dsv41/GFX906-CHANGES.md lists them; they are what patches 0003-0006 were against 0.2.7's tree.
-#
-# --- the patch -----------------------------------------------------------------------------------------------
---- a/CMakeLists.txt
-+++ b/CMakeLists.txt
-@@ -791,6 +791,14 @@
- # ---- HIP gfx906: every CUDA source of the tree (and the ggml-cuda MMQ sources) is compiled as HIP ----
- strata_hip_gfx906_sources()
+# backend: both
+# gfx906 v0.2.21 build enablement in engine/CMakeLists.txt:
+#   (1) wire the re-vendored DeepSeek-V4.1 engine (strata-dsv41) + force ggml-cpu for its CPU lane;
+#   (2) compile strata-hy4's .hip.cpp sources as HIP (not CUDA) under STRATA_HIP_GFX906 so they build with the
+#       gfx906 toolchain instead of requiring nvcc.
+diff --git a/engine/CMakeLists.txt b/engine/CMakeLists.txt
+index fed5f715..45b74661 100644
+--- a/engine/CMakeLists.txt
++++ b/engine/CMakeLists.txt
+@@ -715,6 +715,14 @@ strata_gpu_engine()
  
-+# ---- m-schenker/gfx906: the vendored DeepSeek-V4.1 engine (strata-dsv41) ----
-+# Upstream removed this engine in v0.2.14.  The sources and this module are shipped by the container
-+# (m-schenker/gfx906/added-source-files); apply-source-patches.sh installs them before CMake runs.
+ strata_cpu_kernels()
+ 
++# m-schenker gfx906: the vendored DeepSeek-V4.1 engine (strata-dsv41). Upstream removed the DeepSeek engine in v0.2.14;
++# this container re-vendors it (added-source-files/engine/src/dsv41) and builds it for gfx906. No-op unless the vendored
++# cmake module is present and STRATA_BUILD_DSV41=ON.
 +if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_dsv41.cmake)
 +  include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/strata_dsv41.cmake)
 +  strata_dsv41_engine()
 +endif()
 +
- # ---- strata-split: the opt-in engine that splits every layer across 2-4 NVIDIA cards (src/split, from sFNX, MIT, John Fink) ----
- # OFF by default, Linux + CUDA or HIP only, no other target depends on it; see src/split/CMakeLists.txt and docs/SPLIT_ENGINE.md.
- option(STRATA_BUILD_SPLIT "Build strata-split: sFNX's split-every-layer engine, host-memory exchange (Linux, CUDA or HIP gfx1201, 2-4 cards)" OFF)
---- a/cmake/strata_ggml.cmake
-+++ b/cmake/strata_ggml.cmake
-@@ -34,6 +34,12 @@
-     foreach(_f GGML_AVX GGML_AVX2 GGML_FMA GGML_F16C GGML_BMI2)
-       set(${_f} ON CACHE BOOL "" FORCE)
-     endforeach()
-+    # m-schenker/gfx906: the vendored DeepSeek engine builds ggml-cpu with BMI2 OFF, as upstream's own dsv41 block
-+    # did: ggml's IQ1_S / IQ1_M dots use _pdep_u64, and AMD Zen 1/2 run PDEP in microcode (1.8 GB/s against 32 GB/s
-+    # on an EPYC 7452; the results are bit-identical either way).
-+    if(STRATA_BUILD_DSV41)
-+      set(GGML_BMI2 OFF CACHE BOOL "" FORCE)
-+    endif()
-   elseif(STRATA_ISA_FLOOR)
-     # the experimental older-CPU build (STRATA_ISA_FLOOR above): one ggml-cpu for the floor, ggml's "sandybridge"
-     # feature set (SSE4.2 + AVX) or SSE4.2 alone - not the build host's, which may be newer than the PC it runs on.
+ # ---- plan v0.3 P6: the i-quant models' CPU experts (IQ2_XS / IQ3_XXS files) ----
+ #
+ # The CPU computes a native expert with ggml-cpu's own dot products (`ggml_get_type_traits_cpu`), so an IQ
+@@ -726,7 +734,7 @@ if(STRATA_NATIVE_EXPERTS)
+   enable_language(C)
+   # ggml-base / ggml-cpu only where something links them: the tests (ggml as the oracle) and the ggml-cpu pool (STRATA_OWN_CPU_QUANT=OFF).
+   # A release engine (tests off, Strata's own pool) configures, builds and links no ggml; the ggml tools below exist only with it.
+-  if(STRATA_BUILD_TESTS OR NOT STRATA_OWN_CPU_QUANT)
++  if(STRATA_BUILD_TESTS OR NOT STRATA_OWN_CPU_QUANT OR STRATA_BUILD_DSV41)
+     strata_ggml_configure_root()
+   else()
+     set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)   # (what strata_ggml_configure_root sets for the whole project)
+@@ -965,7 +973,7 @@ if(STRATA_BUILD_HY4)
+     set(_strata_hy4_reader src/hy4flash/metal/strata_reader_nozstd.cpp)
+   endif()
+   set(_strata_hy4_gpu_srcs src/hy4flash/run/hy4_main.hip.cpp src/hy4flash/run/mla_attn.hip.cpp)
+-  if(STRATA_ENABLE_CUDA)
++  if(STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)
+     set_source_files_properties(${_strata_hy4_gpu_srcs} PROPERTIES LANGUAGE CUDA)
+   else()
+     set_source_files_properties(${_strata_hy4_gpu_srcs} PROPERTIES LANGUAGE HIP)
